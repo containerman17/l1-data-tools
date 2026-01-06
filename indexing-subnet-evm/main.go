@@ -1,5 +1,5 @@
 // Indexing VM wrapper - wraps subnet-evm, indexes blocks with traces/receipts
-// Based on avalanchego v1.14.0 / subnet-evm v0.8.0
+// Based on avalanchego v1.14.1 / subnet-evm v0.8.0
 package main
 
 import (

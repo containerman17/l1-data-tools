@@ -20,7 +20,7 @@ rm -rf /home/ubuntu/.avalanchego/chainData/$BLOCKCHAIN_ID
 # Ensure plugins directory exists and is writable
 sudo mkdir -p $HOME/.avalanchego/plugins
 sudo chown -R $USER:$USER $HOME/.avalanchego
-go build -o $HOME/.avalanchego/plugins/$CANONICAL_VM_ID ../cmd/subnet-evm-plugin
+go build -o $HOME/.avalanchego/plugins/$CANONICAL_VM_ID ..
 
 cp ~/.avalanchego/plugins/$CANONICAL_VM_ID ~/.avalanchego/plugins/$VM_ID
 
@@ -53,14 +53,14 @@ cat > ~/.avalanchego/configs/chains/$BLOCKCHAIN_ID/config.json << EOF
 EOF
 
 # Download and extract avalanchego if not present
-AVALANCHEGO_TAR="/tmp/avalanchego-linux-amd64-v1.14.0.tar.gz"
-AVALANCHEGO_DIR="/tmp/avalanchego-v1.14.0"
+AVALANCHEGO_TAR="/tmp/avalanchego-linux-amd64-v1.14.1.tar.gz"
+AVALANCHEGO_DIR="/tmp/avalanchego-v1.14.1"
 AVALANCHEGO_BIN="$AVALANCHEGO_DIR/avalanchego"
 
 if [ ! -f "$AVALANCHEGO_BIN" ]; then
   if [ ! -f "$AVALANCHEGO_TAR" ]; then
-    echo "Downloading avalanchego v1.14.0..."
-    curl -L -o "$AVALANCHEGO_TAR" https://github.com/ava-labs/avalanchego/releases/download/v1.14.0/avalanchego-linux-amd64-v1.14.0.tar.gz
+    echo "Downloading avalanchego v1.14.1..."
+    curl -L -o "$AVALANCHEGO_TAR" https://github.com/ava-labs/avalanchego/releases/download/v1.14.1/avalanchego-linux-amd64-v1.14.1.tar.gz
   fi
   echo "Extracting avalanchego..."
   tar -xzf "$AVALANCHEGO_TAR" -C /tmp/

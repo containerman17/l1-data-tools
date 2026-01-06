@@ -8,7 +8,7 @@ Drop-in replacement for subnet-evm that indexes blocks with receipts and traces 
 docker run \
   -e GRPC_INDEXER_CHAIN_ID=2pGcTLh9Z5YCjmU871k2Z5waC8cCXYJnafYz1h7RJjz7u9Nmg2 \
   -e VM_ID=YourVmId \
-  containerman17/indexing-subnet-evm:v0.8.0_v1.14.0 \
+  containerman17/indexing-subnet-evm:v0.8.0_v1.14.1 \
   --network-id=fuji --track-subnets=YourSubnetId
 ```
 

@@ -16,15 +16,15 @@ COPY . .
 # Build with cache mounts for module and build cache
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
-    CGO_ENABLED=0 go build -o /sink ./cmd/sink
+    CGO_ENABLED=0 go build -o /evm-ingestion ./evm-ingestion
 
 # Runtime image
 FROM alpine:3.20
 
 RUN apk add --no-cache ca-certificates
 
-COPY --from=builder /sink /sink
+COPY --from=builder /evm-ingestion /evm-ingestion
 
-ENTRYPOINT ["/sink"]
+ENTRYPOINT ["/evm-ingestion"]
 CMD ["-config", "/config.yaml"]
 

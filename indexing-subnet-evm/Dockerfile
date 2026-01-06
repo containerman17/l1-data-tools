@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 
-# AVALANCHEGO_NODE_IMAGE must point to an avalanchego image (e.g., avaplatform/avalanchego:v1.14.0)
-ARG AVALANCHEGO_NODE_IMAGE="avaplatform/avalanchego:v1.14.0"
+# AVALANCHEGO_NODE_IMAGE must point to an avalanchego image (e.g., avaplatform/avalanchego:v1.14.1)
+ARG AVALANCHEGO_NODE_IMAGE="avaplatform/avalanchego:v1.14.1"
 
 # ============= Build Stage ================
 FROM golang:1.24.9-bookworm AS builder

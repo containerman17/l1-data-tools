@@ -18,7 +18,7 @@ RPC_URL=http://avalanche-node:9650/ext/bc/C/rpc ./sink
 |----------|----------|---------|-------------|
 | `RPC_URL` | Yes | - | Chain RPC endpoint |
 | `PEBBLE_PATH` | No | `./data/pebble` | Database path |
-| `SERVER_ADDR` | No | `:9090` | WebSocket server address |
+| `SERVER_ADDR` | No | `:9090` | HTTP/WebSocket server address |
 | `MAX_PARALLELISM` | No | `200` | Max concurrent RPC requests |
 | `LOOKAHEAD` | No | `100` | Sliding window size for fetching |
 
@@ -73,13 +73,43 @@ go build -o example-client ./cmd/example-client
 ./example-client -addr localhost:9090 -from 1
 ```
 
-## Protocol
+## API
 
-**Stream blocks (WebSocket):**
+### HTTP Endpoints
+
+**GET /info**
+Returns chain information as JSON.
+
+Response:
+```json
+{
+  "chainID": "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CQUPx4wx3wyQUfpibua",
+  "latestBlock": 12345678
+}
+```
+
+**GET /metrics** (port `:9091`)
+Prometheus metrics endpoint. Exposes ingestion metrics:
+- `ingestion_blocks_total` - Total blocks ingested
+- `ingestion_blocks_behind` - Blocks behind chain head
+- `ingestion_last_block` - Last ingested block number
+- `ingestion_chain_head` - Latest block number on chain
+- `ingestion_rpc_requests_total` - RPC request counts by status
+
+### WebSocket Endpoint
+
+**GET /ws?from={blockNum}**
+Upgrades HTTP connection to WebSocket and streams blocks starting from `from` (default: 1).
+
+Request:
 ```
 GET /ws?from=12345  (upgrade to WebSocket)
-← [BINARY] zstd(NormalizedBlock\nNormalizedBlock\n...)  // batch, ~100 blocks
-← [BINARY] zstd(NormalizedBlock\n)                      // live block
+```
+
+Response frames (binary, zstd-compressed):
+```
+[BINARY] zstd(NormalizedBlock\nNormalizedBlock\n...)  // batch, ~100 blocks
+[BINARY] zstd(NormalizedBlock\n)                      // live block
 ```
 
 All WebSocket frames are binary with zstd-compressed JSONL. Historical data sends compressed batches as-is (~100 blocks per frame). Live blocks are compressed individually.
