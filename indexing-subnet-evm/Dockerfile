@@ -18,10 +18,13 @@ WORKDIR /build
 COPY go.mod go.sum ./
 RUN go mod download
 
-# Copy source
-COPY . .
+# Copy indexing-subnet-evm source
+COPY indexing-subnet-evm/ ./indexing-subnet-evm/
+# Copy evm-ingestion source (required dependency)
+COPY evm-ingestion/ ./evm-ingestion/
 
-RUN CGO_ENABLED=1 go build -o /subnet-evm-plugin ./cmd/subnet-evm-plugin
+# Build the plugin from repo root
+RUN CGO_ENABLED=1 go build -o /subnet-evm-plugin ./indexing-subnet-evm
 
 # ============= Runtime Stage ================
 FROM $AVALANCHEGO_NODE_IMAGE AS runtime
@@ -31,7 +34,7 @@ ENV CANONICAL_VM_ID=srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy
 
 # Copy plugin and entrypoint
 COPY --from=builder /subnet-evm-plugin /avalanchego/build/plugins/$CANONICAL_VM_ID
-COPY cmd/subnet-evm-plugin/entrypoint.sh /entrypoint.sh
+COPY --from=builder /build/indexing-subnet-evm/entrypoint.sh /entrypoint.sh
 RUN chmod +x /entrypoint.sh
 
 ENTRYPOINT ["/entrypoint.sh"]
