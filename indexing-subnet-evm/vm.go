@@ -124,20 +124,51 @@ func (vm *IndexingVM) Initialize(
 	vm.chain = vm.eth.BlockChain()
 	vm.config = vm.chain.Config()
 
+	// Initialize lastAcceptedHeight from chain state
+	// This is critical - Accept() only fires for new blocks, not existing ones
+	if currentBlock := vm.chain.CurrentBlock(); currentBlock != nil {
+		vm.lastAcceptedHeight.Store(currentBlock.Number.Uint64())
+		vm.logger.Info("IndexingVM: chain tip",
+			logging.UserString("height", fmt.Sprintf("%d", currentBlock.Number.Uint64())))
+	}
+
 	// Read state history from config
 	vm.stateHistory = vm.getStateHistory()
 	vm.logger.Info("IndexingVM: state history",
 		logging.UserString("blocks", fmt.Sprintf("%d", vm.stateHistory)))
 
-	// Restore last indexed height from storage meta
-	if lastCompacted := vm.store.GetMeta(); lastCompacted > 0 {
-		vm.lastIndexedHeight.Store(lastCompacted)
-		vm.logger.Info("IndexingVM: restored from meta",
-			logging.UserString("height", fmt.Sprintf("%d", lastCompacted)))
-	} else if latest, ok := vm.store.LatestBlock(); ok {
-		vm.lastIndexedHeight.Store(latest)
-		vm.logger.Info("IndexingVM: restored from latest block",
-			logging.UserString("height", fmt.Sprintf("%d", latest)))
+	// Restore last indexed height from storage
+	// Check BOTH meta (last compacted) AND latest individual block, use the higher
+	// This handles the case where individual blocks exist above the last compacted batch
+	lastIndexed := vm.store.GetMeta()
+	if latest, ok := vm.store.LatestBlock(); ok && latest > lastIndexed {
+		lastIndexed = latest
+	}
+	if lastIndexed > 0 {
+		vm.lastIndexedHeight.Store(lastIndexed)
+		vm.logger.Info("IndexingVM: restored lastIndexed",
+			logging.UserString("height", fmt.Sprintf("%d", lastIndexed)),
+			logging.UserString("meta", fmt.Sprintf("%d", vm.store.GetMeta())))
+	}
+
+	// FATAL CHECK: if gap exceeds state history, we can't recover
+	// State history is an in-memory buffer lost on restart - those blocks' state is GONE
+	lastAccepted := vm.lastAcceptedHeight.Load()
+	if lastIndexed > 0 && lastAccepted > lastIndexed {
+		gap := lastAccepted - lastIndexed
+		maxRecoverable := vm.stateHistory
+		if maxRecoverable > 10 {
+			maxRecoverable -= 10 // safety margin
+		}
+		if gap > maxRecoverable {
+			vm.logger.Error("IndexingVM: FATAL - fallen behind state history window, cannot recover",
+				logging.UserString("lastIndexed", fmt.Sprintf("%d", lastIndexed)),
+				logging.UserString("lastAccepted", fmt.Sprintf("%d", lastAccepted)),
+				logging.UserString("gap", fmt.Sprintf("%d", gap)),
+				logging.UserString("stateHistory", fmt.Sprintf("%d", vm.stateHistory)),
+				logging.UserString("fix", fmt.Sprintf("delete indexer DB: rm -rf %s", dbPath)))
+			return fmt.Errorf("indexer fallen behind by %d blocks (state-history=%d) - delete indexer DB to resync: rm -rf %s", gap, vm.stateHistory, dbPath)
+		}
 	}
 
 	// Create compactor (shared implementation)

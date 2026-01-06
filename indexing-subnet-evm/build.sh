@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
-set -exu
+set -eu
 
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/.."
 
-# VM ID for subnet-evm on mainnet/fuji
-CANONICAL_VM_ID="${CANONICAL_VM_ID:-srEXiWaHuhNyGwPUi444Tu47ZEDwxTWrbQiuD7FmgSAQ6X7Dy}"
+AVALANCHEGO_VERSION="${AVALANCHEGO_VERSION:-v1.14.0}"
+SUBNET_EVM_VERSION="${SUBNET_EVM_VERSION:-v0.8.0}"
+IMAGE_REPO="${IMAGE_REPO:-containerman17/indexing-subnet-evm}"
+IMAGE_TAG="${SUBNET_EVM_VERSION}_${AVALANCHEGO_VERSION}"
 
-# Build destination
-PLUGINS_DIR="${HOME}/.avalanchego/plugins"
+PUSH_FLAG=""
+[[ "${1:-}" == "--push" ]] && PUSH_FLAG="--push"
 
-# Ensure plugins directory exists
-mkdir -p "$PLUGINS_DIR"
+docker buildx build $PUSH_FLAG \
+    --build-arg AVALANCHEGO_NODE_IMAGE="avaplatform/avalanchego:${AVALANCHEGO_VERSION}" \
+    -f indexing-subnet-evm/Dockerfile \
+    -t "${IMAGE_REPO}:${IMAGE_TAG}" \
+    -t "${IMAGE_REPO}:latest" \
+    .
 
-# Build the plugin
-echo "Building subnet-evm-plugin..."
-go build -o "$PLUGINS_DIR/$CANONICAL_VM_ID" .
-
-echo "Built: $PLUGINS_DIR/$CANONICAL_VM_ID"
-
+echo "Built: ${IMAGE_REPO}:${IMAGE_TAG}"

@@ -53,17 +53,20 @@ cat > ~/.avalanchego/configs/chains/$BLOCKCHAIN_ID/config.json << EOF
 EOF
 
 # Download and extract avalanchego if not present
-AVALANCHEGO_TAR="/tmp/avalanchego-linux-amd64-v1.14.1.tar.gz"
-AVALANCHEGO_DIR="/tmp/avalanchego-v1.14.1"
+AVALANCHEGO_TAR="/tmp/avalanchego-linux-amd64-v1.14.0.tar.gz"
+AVALANCHEGO_DIR="/tmp/avalanchego-v1.14.0"
 AVALANCHEGO_BIN="$AVALANCHEGO_DIR/avalanchego"
 
 if [ ! -f "$AVALANCHEGO_BIN" ]; then
   if [ ! -f "$AVALANCHEGO_TAR" ]; then
-    echo "Downloading avalanchego v1.14.1..."
-    curl -L -o "$AVALANCHEGO_TAR" https://github.com/ava-labs/avalanchego/releases/download/v1.14.1/avalanchego-linux-amd64-v1.14.1.tar.gz
+    echo "Downloading avalanchego v1.14.0..."
+    curl -L -o "$AVALANCHEGO_TAR" https://github.com/ava-labs/avalanchego/releases/download/v1.14.0/avalanchego-linux-amd64-v1.14.0.tar.gz
   fi
   echo "Extracting avalanchego..."
   tar -xzf "$AVALANCHEGO_TAR" -C /tmp/
 fi
+
+# Export chain ID for the indexing plugin
+export GRPC_INDEXER_CHAIN_ID=$BLOCKCHAIN_ID
 
 "$AVALANCHEGO_BIN" --partial-sync-primary-network --network-id=fuji --track-subnets=$SUBNET_ID

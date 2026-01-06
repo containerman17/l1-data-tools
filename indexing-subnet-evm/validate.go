@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 
@@ -18,6 +19,7 @@ import (
 func (vm *IndexingVM) validateAfterBootstrap() {
 	lastIndexed := vm.lastIndexedHeight.Load()
 	if lastIndexed == 0 {
+		log.Println("[IndexingVM] validation skipped (no indexed blocks)")
 		vm.logger.Info("IndexingVM: validation skipped (no indexed blocks)")
 		return
 	}
@@ -27,6 +29,7 @@ func (vm *IndexingVM) validateAfterBootstrap() {
 
 	// Check if we have this block indexed
 	if currentHeight > lastIndexed {
+		log.Printf("[IndexingVM] validation skipped (tip %d not indexed yet, lastIndexed=%d)", currentHeight, lastIndexed)
 		vm.logger.Info("IndexingVM: validation skipped (tip not indexed yet)",
 			logging.UserString("tip", fmt.Sprintf("%d", currentHeight)),
 			logging.UserString("lastIndexed", fmt.Sprintf("%d", lastIndexed)))
@@ -35,6 +38,7 @@ func (vm *IndexingVM) validateAfterBootstrap() {
 
 	validateHeight := currentHeight
 
+	log.Printf("[IndexingVM] starting format validation at height %d", validateHeight)
 	vm.logger.Info("IndexingVM: starting format validation",
 		logging.UserString("height", fmt.Sprintf("%d", validateHeight)))
 
@@ -72,6 +76,7 @@ func (vm *IndexingVM) validateAfterBootstrap() {
 	}
 
 	if bytes.Equal(dbNorm, rpcNorm) {
+		log.Printf("[IndexingVM] validation PASSED - DB matches RPC format at height %d", validateHeight)
 		vm.logger.Info("IndexingVM: validation PASSED - DB matches RPC format",
 			logging.UserString("height", fmt.Sprintf("%d", validateHeight)))
 		return
@@ -87,6 +92,8 @@ func (vm *IndexingVM) validateAfterBootstrap() {
 	// Run diff
 	diffOut, _ := exec.Command("diff", "-u", rpcFile, dbFile).CombinedOutput()
 
+	log.Printf("[IndexingVM] validation FAILED at height %d - see %s and %s", validateHeight, dbFile, rpcFile)
+	log.Printf("[IndexingVM] diff preview:\n%s", truncate(string(diffOut), 1000))
 	vm.logger.Error("IndexingVM: validation FAILED - DB does not match RPC format",
 		logging.UserString("height", fmt.Sprintf("%d", validateHeight)),
 		logging.UserString("db_file", dbFile),
