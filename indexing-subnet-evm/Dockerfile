@@ -23,8 +23,10 @@ COPY indexing-subnet-evm/ ./indexing-subnet-evm/
 # Copy evm-ingestion source (required dependency)
 COPY evm-ingestion/ ./evm-ingestion/
 
-# Build the plugin from repo root
-RUN CGO_ENABLED=1 go build -o /subnet-evm-plugin ./indexing-subnet-evm
+# Build the plugin from repo root (with cache mounts for faster rebuilds)
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=1 go build -o /subnet-evm-plugin ./indexing-subnet-evm
 
 # ============= Runtime Stage ================
 FROM $AVALANCHEGO_NODE_IMAGE AS runtime

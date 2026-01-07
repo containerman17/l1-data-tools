@@ -53,9 +53,6 @@ type IndexingVM struct {
 	lastAcceptedHeight atomic.Uint64
 	lastIndexedHeight  atomic.Uint64
 
-	// Indexer loop control
-	stopIndexer chan struct{}
-
 	// Compactor (shared implementation)
 	compactor *storage.Compactor
 
@@ -151,24 +148,22 @@ func (vm *IndexingVM) Initialize(
 			logging.UserString("meta", fmt.Sprintf("%d", vm.store.GetMeta())))
 	}
 
-	// FATAL CHECK: if gap exceeds state history, we can't recover
-	// State history is an in-memory buffer lost on restart - those blocks' state is GONE
+	// FATAL CHECK: ANY gap on restart is unrecoverable
+	// State history is in-memory only (lost on restart), and reexec=0 means no re-execution.
+	// To trace block N, we need state at N-1 (parent). After restart, only tip state exists.
+	//
+	// NOTE: This should NOT happen during normal operation because Accept() indexes
+	// BEFORE accepting. A gap can only occur if crash happens in the tiny window
+	// between indexing and accepting (extremely rare).
 	lastAccepted := vm.lastAcceptedHeight.Load()
 	if lastIndexed > 0 && lastAccepted > lastIndexed {
 		gap := lastAccepted - lastIndexed
-		maxRecoverable := vm.stateHistory
-		if maxRecoverable > 10 {
-			maxRecoverable -= 10 // safety margin
-		}
-		if gap > maxRecoverable {
-			vm.logger.Error("IndexingVM: FATAL - fallen behind state history window, cannot recover",
-				logging.UserString("lastIndexed", fmt.Sprintf("%d", lastIndexed)),
-				logging.UserString("lastAccepted", fmt.Sprintf("%d", lastAccepted)),
-				logging.UserString("gap", fmt.Sprintf("%d", gap)),
-				logging.UserString("stateHistory", fmt.Sprintf("%d", vm.stateHistory)),
-				logging.UserString("fix", fmt.Sprintf("delete indexer DB: rm -rf %s", dbPath)))
-			return fmt.Errorf("indexer fallen behind by %d blocks (state-history=%d) - delete indexer DB to resync: rm -rf %s", gap, vm.stateHistory, dbPath)
-		}
+		vm.logger.Error("IndexingVM: FATAL - gap detected, cannot trace historical blocks",
+			logging.UserString("lastIndexed", fmt.Sprintf("%d", lastIndexed)),
+			logging.UserString("lastAccepted", fmt.Sprintf("%d", lastAccepted)),
+			logging.UserString("gap", fmt.Sprintf("%d", gap)),
+			logging.UserString("fix", fmt.Sprintf("rm -rf %s", dbPath)))
+		return fmt.Errorf("indexer gap of %d blocks detected - state history lost on restart - delete indexer DB to resync: rm -rf %s", gap, dbPath)
 	}
 
 	// Create compactor (shared implementation)
@@ -179,6 +174,10 @@ func (vm *IndexingVM) Initialize(
 
 	// Start firehose server
 	vm.server = api.NewServer(vm.store, chainCtx.ChainID.String())
+	// Initialize server's latestBlock from restored lastIndexed (otherwise stays 0 until new blocks arrive)
+	if lastIndexed > 0 {
+		vm.server.UpdateLatestBlock(lastIndexed)
+	}
 	actualAddr, err := vm.server.Start(":9090")
 	if err != nil {
 		return fmt.Errorf("firehose server failed: %w", err)
@@ -186,11 +185,7 @@ func (vm *IndexingVM) Initialize(
 	vm.logger.Info("IndexingVM: firehose server started",
 		logging.UserString("addr", actualAddr))
 
-	// Start indexing loop (runs during bootstrap AND normal operation)
-	vm.stopIndexer = make(chan struct{})
-	go vm.indexingLoop()
-	vm.logger.Info("IndexingVM: indexing loop started")
-
+	vm.logger.Info("IndexingVM: ready (sync indexing in Accept)")
 	return nil
 }
 
@@ -198,9 +193,6 @@ func (vm *IndexingVM) Initialize(
 func (vm *IndexingVM) Shutdown(ctx context.Context) error {
 	vm.logger.Info("IndexingVM: shutting down")
 
-	if vm.stopIndexer != nil {
-		close(vm.stopIndexer)
-	}
 	if vm.compactor != nil {
 		vm.compactor.Stop()
 	}

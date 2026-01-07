@@ -36,6 +36,14 @@ func (vm *IndexingVM) validateAfterBootstrap() {
 		return
 	}
 
+	// Skip validation if already fully synced on startup
+	// Tracing requires parent state which is lost after restart (state-history is in-memory only)
+	if currentHeight == lastIndexed {
+		log.Printf("[IndexingVM] validation skipped (already synced, no new blocks to validate)")
+		vm.logger.Info("IndexingVM: validation skipped (already synced, state history unavailable for re-tracing)")
+		return
+	}
+
 	validateHeight := currentHeight
 
 	log.Printf("[IndexingVM] starting format validation at height %d", validateHeight)

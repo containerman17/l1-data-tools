@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/ava-labs/avalanchego/snow/consensus/snowman"
 	"github.com/ava-labs/avalanchego/utils/logging"
@@ -15,52 +14,33 @@ type IndexingBlock struct {
 	vm *IndexingVM
 }
 
-// Accept is called when block is accepted into chain
-// Just updates the counter and applies backpressure if indexer falls behind
+// Accept is called when block is accepted into chain (both bootstrap and live).
+// We index BEFORE accepting - this guarantees indexer is always >= chain.
+// If crash after index but before accept: indexer ahead (safe, will skip on re-accept)
+// If crash after accept: both consistent
 func (b *IndexingBlock) Accept(ctx context.Context) error {
 	height := b.Height()
 
-	// Accept the block first
+	// Skip if already indexed (restart case - chain re-accepting what we already have)
+	if height <= b.vm.lastIndexedHeight.Load() {
+		return b.Block.Accept(ctx)
+	}
+
+	// INDEX FIRST (before chain commits)
+	// This ensures indexer >= chain, never behind
+	if err := b.vm.indexBlock(ctx, height); err != nil {
+		b.vm.logger.Error("IndexingVM: failed to index block",
+			logging.UserString("height", fmt.Sprintf("%d", height)),
+			logging.UserString("error", err.Error()))
+		return fmt.Errorf("indexing block %d: %w", height, err)
+	}
+
+	// THEN accept (commits to chain)
 	if err := b.Block.Accept(ctx); err != nil {
 		return err
 	}
 
-	// Update counter FIRST so indexing loop can see the new block
 	b.vm.lastAcceptedHeight.Store(height)
-
-	// Backpressure: if indexer falls too far behind, wait
-	// Threshold = stateHistory - 2 (padding)
-	threshold := b.vm.stateHistory
-	if threshold > 2 {
-		threshold -= 2
-	}
-	if threshold == 0 {
-		threshold = 30 // fallback (32-2)
-	}
-
-	var waitStart time.Time
-	waited := false
-
-	for {
-		lastIndexed := b.vm.lastIndexedHeight.Load()
-		// If already indexed (restart case) or within safe margin, proceed
-		if height <= lastIndexed || height-lastIndexed < threshold {
-			break
-		}
-		// Chain is walking too far ahead, wait for indexer to catch up
-		if !waited {
-			waitStart = time.Now()
-			waited = true
-		}
-		time.Sleep(1 * time.Millisecond)
-	}
-
-	if waited {
-		b.vm.logger.Warn("IndexingVM: Accept blocked waiting for indexer",
-			logging.UserString("height", fmt.Sprintf("%d", height)),
-			logging.UserString("waited", time.Since(waitStart).String()))
-	}
-
 	return nil
 }
 
