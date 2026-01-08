@@ -25,9 +25,17 @@ RUN wget -q https://go.dev/dl/go1.23.4.linux-amd64.tar.gz \
 RUN curl -fsSL https://claude.ai/install.sh | bash \
     && mv /root/.local/bin/claude /usr/local/bin/ || true
 
-# Create user matching host user
-RUN groupadd -g ${GROUP_ID} ${USERNAME} \
-    && useradd -u ${USER_ID} -g ${GROUP_ID} -m -s /bin/bash ${USERNAME} \
+# Create or modify user matching host user
+RUN if getent group ${USERNAME} >/dev/null 2>&1; then \
+        groupmod -g ${GROUP_ID} ${USERNAME} 2>/dev/null || true; \
+    else \
+        groupadd -g ${GROUP_ID} ${USERNAME}; \
+    fi \
+    && if getent passwd ${USERNAME} >/dev/null 2>&1; then \
+        usermod -u ${USER_ID} -g ${GROUP_ID} -d /home/${USERNAME} -m ${USERNAME} 2>/dev/null || true; \
+    else \
+        useradd -u ${USER_ID} -g ${GROUP_ID} -m -s /bin/bash ${USERNAME}; \
+    fi \
     && echo "${USERNAME} ALL=(ALL) NOPASSWD:ALL" >> /etc/sudoers
 
 USER ${USERNAME}
