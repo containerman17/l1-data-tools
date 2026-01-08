@@ -48,19 +48,19 @@ const (
 )
 
 type Compactor struct {
-	store  *Storage
+	store  Storage
 	logger CompactorLogger
 	stopCh chan struct{}
 	doneCh chan struct{}
 }
 
 // NewCompactor creates a compactor with default logger
-func NewCompactor(store *Storage) *Compactor {
+func NewCompactor(store Storage) *Compactor {
 	return NewCompactorWithLogger(store, &defaultLogger{})
 }
 
 // NewCompactorWithLogger creates a compactor with custom logger
-func NewCompactorWithLogger(store *Storage, logger CompactorLogger) *Compactor {
+func NewCompactorWithLogger(store Storage, logger CompactorLogger) *Compactor {
 	return &Compactor{
 		store:  store,
 		logger: logger,

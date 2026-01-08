@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sync/atomic"
 	"unsafe"
 
 	"github.com/ava-labs/avalanchego/database"
+	"github.com/ava-labs/avalanchego/database/prefixdb"
+	"github.com/ava-labs/avalanchego/database/versiondb"
 	"github.com/ava-labs/avalanchego/ids"
 	"github.com/ava-labs/avalanchego/snow"
 	"github.com/ava-labs/avalanchego/snow/consensus/snowman"
@@ -32,15 +33,15 @@ var (
 	errChainNotAllowed = errors.New("chain ID does not match GRPC_INDEXER_CHAIN_ID")
 )
 
-// indexerDBName is the name of the standalone database directory
-const indexerDBName = "indexer"
+// indexerDBPrefix is the prefix for indexer data in the shared versiondb
+var indexerDBPrefix = []byte("grpc_indexer")
 
 // IndexingVM wraps the subnet-evm VM and intercepts key methods
 type IndexingVM struct {
 	*evm.VM
 
-	// Storage (shared pebble implementation)
-	store *storage.Storage
+	// Storage - uses versiondb for atomic commits with chain
+	store storage.Storage
 
 	// Direct access (via reflection)
 	eth       *eth.Ethereum
@@ -95,21 +96,21 @@ func (vm *IndexingVM) Initialize(
 		return errChainNotAllowed
 	}
 
-	// Create standalone database in chainData/{chainID}/indexer/
-	// This ensures it's deleted when chainData is deleted
-	dbPath := filepath.Join(chainCtx.ChainDataDir, indexerDBName)
-	store, err := storage.NewStorage(dbPath)
-	if err != nil {
-		return fmt.Errorf("failed to create indexer storage: %w", err)
-	}
-	vm.store = store
-	vm.logger.Info("IndexingVM: created indexer storage",
-		logging.UserString("path", dbPath))
-
-	// Initialize the underlying VM
+	// Initialize the underlying VM first (creates versiondb internally)
 	if err := vm.VM.Initialize(ctx, chainCtx, db, genesisBytes, upgradeBytes, configBytes, fxs, appSender); err != nil {
 		return err
 	}
+
+	// Get versiondb via reflection - writes go to versiondb.mem, commit atomically with chain
+	vdb, err := vm.getVersionDB()
+	if err != nil {
+		return fmt.Errorf("failed to get versiondb: %w", err)
+	}
+
+	// Create prefixdb on versiondb for indexer data
+	indexerDB := prefixdb.New(indexerDBPrefix, vdb)
+	vm.store = storage.NewVersionDBStorage(indexerDB)
+	vm.logger.Info("IndexingVM: using versiondb for atomic commits")
 
 	// Extract internal fields via reflection
 	vm.eth = vm.getEthFromVM()
@@ -152,9 +153,8 @@ func (vm *IndexingVM) Initialize(
 	// State history is in-memory only (lost on restart), and reexec=0 means no re-execution.
 	// To trace block N, we need state at N-1 (parent). After restart, only tip state exists.
 	//
-	// NOTE: This should NOT happen during normal operation because Accept() indexes
-	// BEFORE accepting. A gap can only occur if crash happens in the tiny window
-	// between indexing and accepting (extremely rare).
+	// NOTE: With versiondb integration, this should NEVER happen - indexer data commits
+	// atomically with chain metadata. Gap detection remains as safety net.
 	lastAccepted := vm.lastAcceptedHeight.Load()
 	if lastIndexed > 0 && lastAccepted > lastIndexed {
 		gap := lastAccepted - lastIndexed
@@ -162,8 +162,8 @@ func (vm *IndexingVM) Initialize(
 			logging.UserString("lastIndexed", fmt.Sprintf("%d", lastIndexed)),
 			logging.UserString("lastAccepted", fmt.Sprintf("%d", lastAccepted)),
 			logging.UserString("gap", fmt.Sprintf("%d", gap)),
-			logging.UserString("fix", fmt.Sprintf("rm -rf %s", dbPath)))
-		return fmt.Errorf("indexer gap of %d blocks detected - state history lost on restart - delete indexer DB to resync: rm -rf %s", gap, dbPath)
+			logging.UserString("fix", fmt.Sprintf("rm -rf %s", chainCtx.ChainDataDir)))
+		return fmt.Errorf("indexer gap of %d blocks detected - state history lost on restart - delete chain data to resync: rm -rf %s", gap, chainCtx.ChainDataDir)
 	}
 
 	// Create compactor (shared implementation)
@@ -250,6 +250,25 @@ func (vm *IndexingVM) GetBlock(ctx context.Context, id ids.ID) (snowman.Block, e
 }
 
 // ===== Reflection helpers =====
+
+func (vm *IndexingVM) getVersionDB() (*versiondb.Database, error) {
+	vmVal := reflect.ValueOf(vm.VM).Elem()
+	vdbField := vmVal.FieldByName("versiondb")
+	if !vdbField.IsValid() {
+		return nil, fmt.Errorf("versiondb field not found in VM")
+	}
+
+	vdbPtr := reflect.NewAt(vdbField.Type(), unsafe.Pointer(vdbField.UnsafeAddr())).Elem()
+	if vdbPtr.IsNil() {
+		return nil, fmt.Errorf("versiondb is nil")
+	}
+
+	vdb, ok := vdbPtr.Interface().(*versiondb.Database)
+	if !ok {
+		return nil, fmt.Errorf("versiondb has unexpected type: %T", vdbPtr.Interface())
+	}
+	return vdb, nil
+}
 
 func (vm *IndexingVM) getEthFromVM() *eth.Ethereum {
 	vmVal := reflect.ValueOf(vm.VM).Elem()

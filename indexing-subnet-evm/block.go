@@ -35,11 +35,17 @@ func (b *IndexingBlock) Accept(ctx context.Context) error {
 		return fmt.Errorf("indexing block %d: %w", height, err)
 	}
 
-	// THEN accept (commits to chain)
+	// THEN accept (commits to chain via versiondb.Commit())
 	if err := b.Block.Accept(ctx); err != nil {
+		// If Accept() fails, versiondb.Abort() clears ALL mem including our indexer data.
+		// We return error here - Snowman will retry. Since lastIndexedHeight wasn't updated,
+		// the skip check won't trigger and we'll re-index correctly.
 		return err
 	}
 
+	// Only update heights AFTER successful Accept.
+	// This ensures retry after failure will re-index.
+	b.vm.lastIndexedHeight.Store(height)
 	b.vm.lastAcceptedHeight.Store(height)
 	return nil
 }

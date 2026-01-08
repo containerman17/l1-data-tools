@@ -51,7 +51,7 @@ func main() {
 	log.Printf("Connected to EVM chain %d (Avalanche chain %s)", evmChainID, chainID)
 
 	// Initialize storage
-	store, err := storage.NewStorage(pebblePath)
+	store, err := storage.NewPebbleStorage(pebblePath)
 	if err != nil {
 		log.Fatalf("Failed to open storage: %v", err)
 	}
@@ -107,7 +107,7 @@ func main() {
 	select {}
 }
 
-func runIngestion(ctx context.Context, fetcher *rpc.Fetcher, store *storage.Storage, server *api.Server, chainLabel string, lookahead int) {
+func runIngestion(ctx context.Context, fetcher *rpc.Fetcher, store storage.Storage, server *api.Server, chainLabel string, lookahead int) {
 	// Retry loop - if streaming fails, restart from last saved block
 	for {
 		select {

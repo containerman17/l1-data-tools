@@ -6,8 +6,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/containerman17/l1-data-tools/evm-ingestion/consts"
 	"github.com/cockroachdb/pebble/v2"
+	"github.com/containerman17/l1-data-tools/evm-ingestion/consts"
 )
 
 // BatchSize is blocks per compressed batch
@@ -19,19 +19,23 @@ const (
 	metaKey        = "meta"
 )
 
-type Storage struct {
+// PebbleStorage implements Storage using a standalone pebble database
+type PebbleStorage struct {
 	db *pebble.DB
 }
 
-func NewStorage(path string) (*Storage, error) {
+// Ensure PebbleStorage implements Storage interface
+var _ Storage = (*PebbleStorage)(nil)
+
+func NewPebbleStorage(path string) (*PebbleStorage, error) {
 	db, err := pebble.Open(path, &pebble.Options{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to open pebble db: %w", err)
 	}
-	return &Storage{db: db}, nil
+	return &PebbleStorage{db: db}, nil
 }
 
-func (s *Storage) Close() error {
+func (s *PebbleStorage) Close() error {
 	return s.db.Close()
 }
 
@@ -71,12 +75,12 @@ func parseBatchKey(key []byte) (start, end uint64, ok bool) {
 }
 
 // SaveBlock stores a block's JSON data
-func (s *Storage) SaveBlock(blockNum uint64, data []byte) error {
+func (s *PebbleStorage) SaveBlock(blockNum uint64, data []byte) error {
 	return s.db.Set(blockKey(blockNum), data, pebble.Sync)
 }
 
 // GetBlock retrieves a single block's data
-func (s *Storage) GetBlock(blockNum uint64) ([]byte, error) {
+func (s *PebbleStorage) GetBlock(blockNum uint64) ([]byte, error) {
 	data, closer, err := s.db.Get(blockKey(blockNum))
 	if err != nil {
 		return nil, err
@@ -88,7 +92,7 @@ func (s *Storage) GetBlock(blockNum uint64) ([]byte, error) {
 }
 
 // FirstBlock returns the lowest block number stored
-func (s *Storage) FirstBlock() (uint64, bool) {
+func (s *PebbleStorage) FirstBlock() (uint64, bool) {
 	iter, err := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("block:"),
 		UpperBound: []byte("block;"), // ; is after : in ASCII
@@ -107,7 +111,7 @@ func (s *Storage) FirstBlock() (uint64, bool) {
 }
 
 // LatestBlock returns the highest block number stored
-func (s *Storage) LatestBlock() (uint64, bool) {
+func (s *PebbleStorage) LatestBlock() (uint64, bool) {
 	iter, err := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("block:"),
 		UpperBound: []byte("block;"),
@@ -126,19 +130,19 @@ func (s *Storage) LatestBlock() (uint64, bool) {
 }
 
 // DeleteBlockRange deletes all blocks from start to end (inclusive)
-func (s *Storage) DeleteBlockRange(start, end uint64) error {
+func (s *PebbleStorage) DeleteBlockRange(start, end uint64) error {
 	startKey := blockKey(start)
 	endKey := blockKey(end + 1)
 	return s.db.DeleteRange(startKey, endKey, pebble.Sync)
 }
 
 // SaveBatch stores a compressed batch of blocks
-func (s *Storage) SaveBatch(start, end uint64, data []byte) error {
+func (s *PebbleStorage) SaveBatch(start, end uint64, data []byte) error {
 	return s.db.Set(batchKey(start, end), data, pebble.Sync)
 }
 
 // GetBatchCompressed retrieves a compressed batch by its start block
-func (s *Storage) GetBatchCompressed(start uint64) ([]byte, error) {
+func (s *PebbleStorage) GetBatchCompressed(start uint64) ([]byte, error) {
 	// Calculate expected end block (batches are 100 blocks)
 	end := start + BatchSize - 1
 	data, closer, err := s.db.Get(batchKey(start, end))
@@ -152,7 +156,7 @@ func (s *Storage) GetBatchCompressed(start uint64) ([]byte, error) {
 }
 
 // FirstBatch returns the start block of the first compressed batch
-func (s *Storage) FirstBatch() (uint64, bool) {
+func (s *PebbleStorage) FirstBatch() (uint64, bool) {
 	iter, err := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("batch:"),
 		UpperBound: []byte("batch;"),
@@ -171,7 +175,7 @@ func (s *Storage) FirstBatch() (uint64, bool) {
 }
 
 // LatestBatch returns the end block of the last compressed batch
-func (s *Storage) LatestBatch() (uint64, bool) {
+func (s *PebbleStorage) LatestBatch() (uint64, bool) {
 	iter, err := s.db.NewIter(&pebble.IterOptions{
 		LowerBound: []byte("batch:"),
 		UpperBound: []byte("batch;"),
@@ -190,7 +194,7 @@ func (s *Storage) LatestBatch() (uint64, bool) {
 }
 
 // GetMeta returns the last compacted block number (0 if not set)
-func (s *Storage) GetMeta() uint64 {
+func (s *PebbleStorage) GetMeta() uint64 {
 	data, closer, err := s.db.Get([]byte(metaKey))
 	if err != nil {
 		return 0
@@ -203,14 +207,14 @@ func (s *Storage) GetMeta() uint64 {
 }
 
 // SaveMeta stores the last compacted block number
-func (s *Storage) SaveMeta(lastCompacted uint64) error {
+func (s *PebbleStorage) SaveMeta(lastCompacted uint64) error {
 	data := make([]byte, 8)
 	binary.BigEndian.PutUint64(data, lastCompacted)
 	return s.db.Set([]byte(metaKey), data, pebble.Sync)
 }
 
 // BlockCount returns approximate count of individual blocks stored
-func (s *Storage) BlockCount() int {
+func (s *PebbleStorage) BlockCount() int {
 	first, hasFirst := s.FirstBlock()
 	if !hasFirst {
 		return 0

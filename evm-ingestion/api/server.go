@@ -20,7 +20,7 @@ import (
 
 type Server struct {
 	httpServer  *http.Server
-	store       *storage.Storage
+	store       storage.Storage
 	latestBlock atomic.Uint64
 	ctx         context.Context
 	cancel      context.CancelFunc
@@ -35,7 +35,7 @@ var upgrader = websocket.Upgrader{
 	CheckOrigin:     func(r *http.Request) bool { return true },
 }
 
-func NewServer(store *storage.Storage, chainID string) *Server {
+func NewServer(store storage.Storage, chainID string) *Server {
 	ctx, cancel := context.WithCancel(context.Background())
 	enc, _ := zstd.NewWriter(nil, zstd.WithEncoderLevel(zstd.SpeedFastest))
 	return &Server{

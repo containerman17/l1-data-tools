@@ -72,13 +72,17 @@ func (vm *IndexingVM) indexBlock(ctx context.Context, height uint64) error {
 		return fmt.Errorf("marshal block %d: %w", height, err)
 	}
 
-	// Save to storage
+	// Save to storage (writes to versiondb.mem, committed by wrappedBlock.Accept())
 	if err := vm.store.SaveBlock(height, data); err != nil {
 		return fmt.Errorf("save block %d: %w", height, err)
 	}
 
-	// Update state
-	vm.lastIndexedHeight.Store(height)
+	// NOTE: Do NOT update lastIndexedHeight here!
+	// It must be updated in Accept() AFTER b.Block.Accept() succeeds.
+	// Otherwise, if Accept() fails after indexBlock(), the skip check will
+	// trigger on retry and we'll create a gap.
+
+	// Update server (for live streaming - acceptable to be slightly ahead)
 	if vm.server != nil {
 		vm.server.UpdateLatestBlock(height)
 	}

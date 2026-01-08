@@ -4,6 +4,8 @@
 
 Current indexer uses a separate pebble database with `pebble.Sync` on every write. On crash after indexBlock() but before Accept() completes, if WALs flush independently, we get a gap requiring full resync.
 
+Note: "Orphan data" (indexed data when Accept() fails) is NOT a problem - on retry, same height = same key = overwrite. Snowman consensus ensures the same block wins after Accept() is called.
+
 ## Key Findings
 
 ### 1. subnet-evm Uses `Sync=false` by Default

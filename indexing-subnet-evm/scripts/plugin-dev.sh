@@ -13,9 +13,11 @@ BLOCKCHAIN_ID="2pGcTLh9Z5YCjmU871k2Z5waC8cCXYJnafYz1h7RJjz7u9Nmg2"
 VM_ID="Vpkm9F6REMHamNkuDJPGMc6BUivQGdzWQJ2nVyL1iappBxXyy"
 SUBNET_ID="VgJ6r7jQzMeXLTDaRNzBiMesZmTpioT8fntEZMvYkCW1bJyAj"
 
+AVALANCHEGO_VERSION="v1.14.0"
+
 
 # Clean chain data for fresh bootstrap
-# rm -rf /home/ubuntu/.avalanchego/chainData/$BLOCKCHAIN_ID
+rm -rf /home/ubuntu/.avalanchego/chainData/$BLOCKCHAIN_ID
 
 # Ensure plugins directory exists and is writable
 sudo mkdir -p $HOME/.avalanchego/plugins
@@ -53,14 +55,14 @@ cat > ~/.avalanchego/configs/chains/$BLOCKCHAIN_ID/config.json << EOF
 EOF
 
 # Download and extract avalanchego if not present
-AVALANCHEGO_TAR="/tmp/avalanchego-linux-amd64-v1.14.0.tar.gz"
-AVALANCHEGO_DIR="/tmp/avalanchego-v1.14.0"
+AVALANCHEGO_TAR="/tmp/avalanchego-linux-amd64-${AVALANCHEGO_VERSION}.tar.gz"
+AVALANCHEGO_DIR="/tmp/avalanchego-${AVALANCHEGO_VERSION}"
 AVALANCHEGO_BIN="$AVALANCHEGO_DIR/avalanchego"
 
 if [ ! -f "$AVALANCHEGO_BIN" ]; then
   if [ ! -f "$AVALANCHEGO_TAR" ]; then
-    echo "Downloading avalanchego v1.14.0..."
-    curl -L -o "$AVALANCHEGO_TAR" https://github.com/ava-labs/avalanchego/releases/download/v1.14.0/avalanchego-linux-amd64-v1.14.0.tar.gz
+    echo "Downloading avalanchego ${AVALANCHEGO_VERSION}..."
+    curl -L -o "$AVALANCHEGO_TAR" https://github.com/ava-labs/avalanchego/releases/download/${AVALANCHEGO_VERSION}/avalanchego-linux-amd64-${AVALANCHEGO_VERSION}.tar.gz
   fi
   echo "Extracting avalanchego..."
   tar -xzf "$AVALANCHEGO_TAR" -C /tmp/
