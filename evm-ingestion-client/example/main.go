@@ -19,7 +19,7 @@ import (
 
 const (
 	connectTimeout = 5 * time.Second
-	readTimeout    = 30 * time.Second
+	readTimeout    = 5 * time.Second
 	reconnectDelay = 2 * time.Second
 )
 
@@ -34,6 +34,7 @@ func main() {
 	// Stats tracking
 	startTime := time.Now()
 	totalBlocks := uint64(0)
+	totalTxs := uint64(0)
 	lastLogTime := time.Now()
 	lastLogBlocks := uint64(0)
 	lastBlock := *fromBlock - 1
@@ -51,6 +52,7 @@ func main() {
 			}
 			lastBlock = blockNum
 			totalBlocks++
+			totalTxs += uint64(len(block.Block.Transactions))
 
 			// Log once per second if new blocks were processed
 			if time.Since(lastLogTime) >= time.Second {
@@ -63,8 +65,8 @@ func main() {
 					totalElapsed := now.Sub(startTime).Seconds()
 					avgRate := float64(totalBlocks) / totalElapsed
 
-					fmt.Printf("Block %d | %.1f blk/s recent | %.1f blk/s avg | %d txs\n",
-						blockNum, recentRate, avgRate, len(block.Block.Transactions))
+					fmt.Printf("Block %d | %.1f blk/s recent | %.1f blk/s avg | %d txs in block | %d total txs\n",
+						blockNum, recentRate, avgRate, len(block.Block.Transactions), totalTxs)
 
 					lastLogBlocks = totalBlocks
 				}
@@ -74,6 +76,11 @@ func main() {
 		})
 
 		if err != nil {
+			fmt.Printf("\n=== FINAL STATS ===\n")
+			fmt.Printf("Last block: %d\n", lastBlock)
+			fmt.Printf("Total blocks: %d\n", totalBlocks)
+			fmt.Printf("Total transactions: %d\n", totalTxs)
+			fmt.Printf("===================\n\n")
 			fmt.Printf("[%s] Disconnected: %v (last processed: block %d). Reconnecting in %v...\n",
 				time.Now().Format("15:04:05"), err, lastBlock, reconnectDelay)
 			time.Sleep(reconnectDelay)
