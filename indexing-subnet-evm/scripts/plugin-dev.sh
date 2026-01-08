@@ -17,7 +17,7 @@ AVALANCHEGO_VERSION="v1.14.0"
 
 
 # Clean chain data for fresh bootstrap
-rm -rf /home/ubuntu/.avalanchego/chainData/$BLOCKCHAIN_ID
+# rm -rf /home/ubuntu/.avalanchego/chainData/$BLOCKCHAIN_ID
 
 # Ensure plugins directory exists and is writable
 sudo mkdir -p $HOME/.avalanchego/plugins
