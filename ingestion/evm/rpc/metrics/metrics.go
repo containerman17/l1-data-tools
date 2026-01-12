@@ -54,6 +54,50 @@ var (
 		},
 		[]string{"chain", "status"},
 	)
+
+	// Client buffer metrics
+
+	// ClientBufferUsedBytes shows current compressed bytes in buffer
+	ClientBufferUsedBytes = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ingestion_client_buffer_used_bytes",
+			Help: "Current compressed bytes in client receive buffer",
+		},
+	)
+
+	// ClientBufferCapacityBytes shows buffer size limit
+	ClientBufferCapacityBytes = prometheus.NewGauge(
+		prometheus.GaugeOpts{
+			Name: "ingestion_client_buffer_capacity_bytes",
+			Help: "Client receive buffer size limit",
+		},
+	)
+
+	// ClientBatchesProcessedTotal counts number of batches processed
+	ClientBatchesProcessedTotal = prometheus.NewCounter(
+		prometheus.CounterOpts{
+			Name: "ingestion_client_batches_processed_total",
+			Help: "Total number of batches processed by client",
+		},
+	)
+
+	// ClientBatchSizeBytes histogram of compressed size per batch
+	ClientBatchSizeBytes = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "ingestion_client_batch_size_bytes",
+			Help:    "Compressed size per batch in bytes",
+			Buckets: prometheus.ExponentialBuckets(1024, 4, 10), // 1KB to ~256MB
+		},
+	)
+
+	// ClientBackpressureWaitSeconds histogram of time spent waiting for buffer space
+	ClientBackpressureWaitSeconds = prometheus.NewHistogram(
+		prometheus.HistogramOpts{
+			Name:    "ingestion_client_backpressure_wait_seconds",
+			Help:    "Time spent waiting for buffer space due to backpressure",
+			Buckets: prometheus.ExponentialBuckets(0.001, 2, 15), // 1ms to ~16s
+		},
+	)
 )
 
 func init() {
@@ -62,6 +106,11 @@ func init() {
 	prometheus.MustRegister(LastIngestedBlock)
 	prometheus.MustRegister(ChainHead)
 	prometheus.MustRegister(RPCRequestsTotal)
+	prometheus.MustRegister(ClientBufferUsedBytes)
+	prometheus.MustRegister(ClientBufferCapacityBytes)
+	prometheus.MustRegister(ClientBatchesProcessedTotal)
+	prometheus.MustRegister(ClientBatchSizeBytes)
+	prometheus.MustRegister(ClientBackpressureWaitSeconds)
 }
 
 // ChainLabel returns the combined chain label "name_id"

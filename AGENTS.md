@@ -5,7 +5,7 @@ Two Avalanche repos are cloned in the home directory:
 - `~/avalanchego` (v1.14.0) - main Avalanche node
 - `~/subnet-evm` (v0.8.0) - subnet EVM implementation
 
-Use `grep` to search these repos when you need to understand how something works.
+Use `grep` to search these repos when you need to understand how something works or delegate to a one-shot Claude to preserve context in the main thread.
 
 ## Searching Reference Repos
 
