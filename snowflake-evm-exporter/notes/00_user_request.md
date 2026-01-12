@@ -18,15 +18,14 @@ CLI tool that downloads EVM chain data from the `evm-ingestion` service and expo
 
 ---
 
-## Target Tables in Snowflake (5 tables)
+## Target Tables in Snowflake (6 tables)
 
 1. **Blocks**
 2. **Transactions**
-3. **Logs** (from receipts)
-4. **Internal Transactions** (from traces/call traces)
-5. **ICM Messages** (Avalanche Interchain Messaging - not all chains have this)
-
-> Note: Some chains may not have certain data types (e.g., ICM messages are Avalanche-specific). Not all tables will receive data for all chains.
+3. **Receipts** (gas used, status, contract creation info)
+4. **Logs** (events emitted during transaction execution)
+5. **Internal Transactions** (from traces/call traces)
+6. **Messages** (EVM `core.Message` representation - effective gas price, 1:1 with transactions)
 
 ---
 
@@ -43,7 +42,7 @@ Instead of maintaining local SQLite state to track progress:
 
 ## Consistency Requirement
 
-**All 5 tables must stop at exactly the same block number.**
+**All 6 tables must stop at exactly the same block number.**
 
 ### Research Findings on Snowflake Atomic Writes:
 
