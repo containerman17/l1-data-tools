@@ -1,6 +1,9 @@
 # EVM Ingestion: Technical Spec
 
-## 1. WebSocket Streaming
+## 1. Indexer API
+Each indexer service exposes these endpoints:
+
+### 1.1 WebSocket Streaming
 - **Endpoint**: `/ws?from={uint64}`
 - **Format**: Binary frames, `zstd` compressed JSONL.
 - **Batching**:
@@ -10,6 +13,18 @@
   - Request starts at `from`.
   - If `from` is mid-batch, server sends full 100-block batch.
   - Client MUST filter `block.number < from`.
+
+### 1.2 Info Endpoint
+- **Endpoint**: `/info`
+- **Response**:
+```json
+{
+  "chainID": "J3MYb3rDARLmB7FrRybinyjKqVTqmerbCr9bAXDatrSaHiLxQ",
+  "latestBlock": 18138462
+}
+```
+- `chainID`: The Avalanche blockchain ID
+- `latestBlock`: Latest ingested block available for streaming
 
 ## 2. Data Schema
 
@@ -41,11 +56,23 @@ type CallTrace struct {
 
 ```json
 {
-  "2q9e...": { "name": "DFK", "evmChainId": 53935, "subnetId": "Vn3...", "indexer": "/indexer/2q9e.../ws" },
-  "2Z36...": { "name": "Swimmer", "evmChainId": 73772, "subnetId": "2Do...", "indexer": "/indexer/2Z36.../ws" }
+  "2q9e...": { 
+    "name": "DFK", 
+    "evmChainId": 53935, 
+    "subnetId": "Vn3...", 
+    "indexer": "/indexer/2q9e.../ws",
+    "info": "/indexer/2q9e.../info"
+  }
 }
 ```
 
-Indexer path pattern: `/indexer/{blockchainId}/ws?from={block}`
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Chain name |
+| `evmChainId` | no | EVM chain ID (if available) |
+| `subnetId` | no | Avalanche subnet ID (if available) |
+| `indexer` | yes | WebSocket streaming endpoint path |
+| `info` | yes | Info endpoint path for status/latest block |
+| `rpc`, `ws`, `health` | no | Additional endpoints (when running local node) |
 
-Additional fields allowed; listed fields required.
+Indexer path pattern: `/indexer/{blockchainId}/ws?from={block}`
