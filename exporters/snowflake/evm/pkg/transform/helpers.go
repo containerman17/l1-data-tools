@@ -59,9 +59,10 @@ func hexToInt64Str(s string) string {
 }
 
 // hexToBigIntStr converts hex string to big decimal string for large values.
+// Returns "0" for empty input to match golden data format.
 func hexToBigIntStr(s string) string {
 	if s == "" {
-		return ""
+		return "0"
 	}
 	return parseHexBigInt(s).String()
 }
@@ -81,4 +82,50 @@ func normalizeAddress(addr string) string {
 		return "0x"
 	}
 	return addr
+}
+
+// normalizeHexOutput converts empty output to "0x" for trace outputs.
+// Golden data represents nil/empty Output as "0x" rather than empty string.
+func normalizeHexOutput(output string) string {
+	if output == "" {
+		return "0x"
+	}
+	return output
+}
+
+// calculateIntrinsicGas calculates the intrinsic gas cost for a transaction.
+// This includes:
+// - Base cost: 21000
+// - CREATE cost: 32000 (if isCreate is true)
+// - Data cost: 4 per zero byte, 16 per non-zero byte
+func calculateIntrinsicGas(inputHex string, isCreate bool) int64 {
+	const (
+		TxGas         = 21000 // Base transaction gas
+		TxGasCreate   = 32000 // Additional gas for CREATE
+		TxDataZeroGas = 4     // Gas per zero byte of data
+		TxDataNonZero = 16    // Gas per non-zero byte of data
+	)
+
+	gas := int64(TxGas)
+
+	if isCreate {
+		gas += TxGasCreate
+	}
+
+	// Calculate data cost from input
+	if len(inputHex) > 2 && strings.HasPrefix(inputHex, "0x") {
+		data := inputHex[2:] // Remove 0x prefix
+		for i := 0; i < len(data); i += 2 {
+			if i+1 < len(data) {
+				byteStr := data[i : i+2]
+				if byteStr == "00" {
+					gas += TxDataZeroGas
+				} else {
+					gas += TxDataNonZero
+				}
+			}
+		}
+	}
+
+	return gas
 }
