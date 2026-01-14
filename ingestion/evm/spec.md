@@ -1,7 +1,7 @@
 # EVM Ingestion: Technical Spec
 
-## 1. Indexer API
-Each indexer service exposes these endpoints:
+## 1. Ingestion API
+Each ingestion service exposes these endpoints:
 
 ### 1.1 WebSocket Streaming
 - **Endpoint**: `/ws?from={uint64}`

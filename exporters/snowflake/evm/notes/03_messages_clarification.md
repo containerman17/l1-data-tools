@@ -94,7 +94,7 @@ AVALANCHE.PRIMARY.C_MESSAGES
 | `pipelines/dlvalidation/fixtures/kafka_fixture_block_32587066.json` | Example Kafka payload showing `transactionMessage` structure |
 | `go.mod` (line 9) | References `avalanche-data-producer v0.2.59` |
 
-### External Dependency (Not Available)
+### Repository: `~/avalanche-data-producer/`
 
 - `github.com/ava-labs/avalanche-data-producer` — The actual producer that extracts transaction messages and writes to Kafka/S3
 

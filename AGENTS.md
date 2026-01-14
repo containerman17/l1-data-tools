@@ -1,3 +1,6 @@
+> [!CAUTION]
+> **NEVER CUT CORNERS.** If tests don't pass, if data is missing or incorrect, if something seems wrong or data appears inconsistent—**STOP and ask the user for input.** Do not proceed with assumptions, workarounds, or incomplete implementations. This is critical for data integrity.
+
 # Project Context
 
 ## Reference Repos
