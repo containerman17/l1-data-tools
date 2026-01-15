@@ -1,0 +1,6 @@
+ubuntu@tokyo:~/devrel-experiments/03_data_api/p-chain-indexer$ curl https://data-api.avax.network/v1/networks/fuji/blockchains/x-chain/assets/tWt78T4XYdCSfqXoyhf9WGgbjf9i4GzqTwB9stje2bd6G5kSC
+{"assetId":"tWt78T4XYdCSfqXoyhf9WGgbjf9i4GzqTwB9stje2bd6G5kSC","name":"Schmeckles","symbol":"SMK","denomination":9,"createdAtTimestamp":1698095727,"type":"secp256k1","cap":"fixed"}ubuntu@tokyo:~/devrel-experiments/03_data_api/p-chain-indexer$ curl https://data-api.avax.network/v1/networks/fuji/blockchains/x-chain/assets/U8iRqJoiJm8xZHAacmvYyZVwqQx6uDNtU8iRqJoiJm8xZHAacmvYyZVwqQx6uDNtQeP3CQ6fcgQk3JqnK
+{"assetId":"U8iRqJoiJm8xZHAacmvYyZVwqQx6uDNtQeP3CQ6fcgQk3JqnK","name":"Avalanche","symbol":"AVAX","denomination":9,"createdAtTimestamp":1599696000,"type":"secp256k1","cap":"fixed"}ubuntu@tokyo:~/devrel-experiments/03_data_api/p-chain-indexer$ curl https://data-api.avax.network/v1/networks/fuji/blockchains/x-chain/assets/2g68XohNi7CnsGypGK2AWbMx4iz94BSk2g68XohNi7CnsGypGK2AWbMx4iz94BSkwKZ1UXReESnXC5WMkA
+{"assetId":"2g68XohNi7CnsGypGK2AWbMx4iz94BSkwKZ1UXReESnXC5WMkA","name":"Jovica Coin","symbol":"JOV","denomination":9,"createdAtTimestamp":1634054989,"type":"secp256k1","cap":"fixed"}ubuntu@tokyo:~/devrel-experiments/03_data_api/p-chain-indexer$ 
+
+implement this as a separate indexer. use those 3 as a self test. 

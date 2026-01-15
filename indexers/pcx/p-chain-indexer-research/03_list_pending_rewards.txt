@@ -1,0 +1,364 @@
+# P-Chain Pending Rewards Endpoint
+
+## Glacier API Example Response
+```json
+{
+  "pendingRewards": [
+    {
+      "addresses": ["avax19zfygxaf59stehzedhxjesads0p5jdvfeedal0"],
+      "txHash": "2ukSToGPVgxHmgUzbGt3mJRVCJWV5nQv66uGirx38x7CxuuHmj",
+      "amountStaked": "701813645564",
+      "nodeId": "NodeID-DaKj4jkyyCN4B5zVW65krECqpjxYGUFzX",
+      "startTimestamp": 1765251574,
+      "endTimestamp": 1766615565,
+      "progress": 0.0241,
+      "estimatedReward": {
+        "assetId": "FvwEAhmxKfeiG8SnEvq42hc6whRyY3EFYAvebMqDNDGCgxN5Z",
+        "name": "Avalanche",
+        "symbol": "AVAX",
+        "denomination": 9,
+        "type": "secp256k1",
+        "amount": "1585793298"
+      },
+      "rewardType": "DELEGATOR"
+    }
+  ]
+}
+```
+
+## What is "Pending Rewards"?
+
+Despite the name, this returns **currently active** stakers (validators/delegators) and their estimated reward at completion. "Pending" means the reward hasn't been paid out yet (staking period not ended).
+
+Fields:
+- `addresses` — reward owner addresses (who receives the reward)
+- `txHash` — the AddValidator/AddDelegator transaction ID
+- `amountStaked` — stake weight in nAVAX
+- `nodeId` — the validator node being staked to
+- `startTimestamp` / `endTimestamp` — staking period
+- `progress` — how far through the staking period (percentage, e.g., 9.8 = 9.8%)
+- `estimatedReward` — `potentialReward` from node (calculated at stake start)
+- `rewardType` — "VALIDATOR", "VALIDATOR_FEE", or "DELEGATOR"
+
+### Reward Types Explained
+
+| Type | Who Receives | Source | TxHash Points To |
+|------|-------------|--------|------------------|
+| VALIDATOR | Validator | Validator's own stake reward | AddValidatorTx |
+| VALIDATOR_FEE | Validator | Fee cut from delegator rewards | AddDelegatorTx (!) |
+| DELEGATOR | Delegator | Delegator reward minus validator fee | AddDelegatorTx |
+
+**Important**: VALIDATOR_FEE entries use the **delegator's** txHash, not the validator's. Each delegator generates one VALIDATOR_FEE entry for the validator.
+
+## Node Already Computes This!
+
+The node calculates `potentialReward` when a staker is added:
+
+```go
+// From txs/executor/standard_tx_executor.go
+potentialReward := rewards.Calculate(
+    stakeDuration,
+    stakerTx.Weight(),
+    currentSupply,
+)
+```
+
+And returns it in `platform.getCurrentValidators`:
+
+```json
+{
+  "validators": [{
+    "txID": "...",
+    "nodeID": "NodeID-...",
+    "startTime": "1600368632",
+    "endTime": "1602960455",
+    "weight": "2000000000000",
+    "potentialReward": "117431493426",  // <-- already computed!
+    "validationRewardOwner": {
+      "addresses": ["P-avax18jma8ppw3nhx5r4ap8clazz0dps7rv5ukulre5"]
+    },
+    "delegators": [{
+      "txID": "...",
+      "weight": "25000000000",
+      "potentialReward": "11743144774",  // <-- for delegators too
+      "rewardOwner": {
+        "addresses": ["P-avax18jma8ppw3nhx5r4ap8clazz0dps7rv5ukulre5"]
+      }
+    }]
+  }]
+}
+```
+
+## CRITICAL: RPC Behavior Quirks (Discovered Dec 2024)
+
+### Delegators Only Returned for SINGLE nodeID Queries!
+
+**This is a critical gotcha.** The `platform.getCurrentValidators` RPC has surprising behavior:
+
+| Query Type | Validators | Delegators |
+|------------|-----------|------------|
+| No nodeIDs filter | ✅ All 800+ | ❌ Empty arrays |
+| Multiple nodeIDs | ✅ Requested | ❌ Empty arrays |
+| **Single nodeID** | ✅ One | ✅ Full details |
+
+```bash
+# No nodeIDs - gets validators but NO delegators
+curl -X POST --data '{"method":"platform.getCurrentValidators","params":{}}' | jq '.result.validators[0].delegators | length'
+# Returns: 0
+
+# Multiple nodeIDs - still NO delegators
+curl -X POST --data '{"method":"platform.getCurrentValidators","params":{"nodeIDs":["NodeID-A","NodeID-B"]}}' | jq '.result.validators[0].delegators | length'
+# Returns: 0
+
+# Single nodeID - NOW we get delegators!
+curl -X POST --data '{"method":"platform.getCurrentValidators","params":{"nodeIDs":["NodeID-A"]}}' | jq '.result.validators[0].delegators | length'
+# Returns: 16
+```
+
+### Pending Stakers Not in RPC
+
+Validators/delegators whose staking period hasn't started yet are NOT returned by `getCurrentValidators`. They're in the "staking queue" but the RPC only returns active stakers.
+
+To match Glacier 100%, you need to index `AddValidatorTx`/`AddDelegatorTx` to track pending stakers.
+
+## Implementation: Two-Step Query with Individual Calls
+
+Given the RPC quirks, this is NOT a simple proxy. Requires careful query strategy.
+
+### Flow (Corrected)
+```
+GET /rewards:listPending?addresses=X,Y,Z
+
+1. Query ALL validators (no nodeIDs filter)
+   - Gets basic validator info + validationRewardOwner + delegationRewardOwner
+   - But NO delegator details
+
+2. Filter: find validators where query address is in:
+   - validationRewardOwner.addresses → will generate VALIDATOR entries
+   - delegationRewardOwner.addresses → will generate VALIDATOR_FEE entries
+
+3. For EACH matching validator, query INDIVIDUALLY with single nodeID
+   - This returns full delegator details for that validator
+
+4. Build results:
+   - VALIDATOR: address matches validationRewardOwner
+   - VALIDATOR_FEE: address matches delegationRewardOwner (one per delegator)
+   - DELEGATOR: address matches delegator's rewardOwner
+
+5. Transform to Glacier format and return
+```
+
+### Code Sketch (Corrected for RPC Quirks)
+```go
+func listPendingRewards(ctx context.Context, client platformvm.Client, queryAddrs set.Set[ids.ShortID]) ([]PendingReward, error) {
+    // Step 1: Get ALL validators (no delegator details yet)
+    allValidators, err := client.GetCurrentValidators(ctx, constants.PrimaryNetworkID, nil)
+    if err != nil {
+        return nil, err
+    }
+    
+    // Step 2: Find validators where query address is reward owner
+    var matchingNodeIDs []string
+    for _, vdr := range allValidators {
+        if hasMatchingAddr(vdr.ValidationRewardOwner.Addresses, queryAddrs) ||
+           hasMatchingAddr(vdr.DelegationRewardOwner.Addresses, queryAddrs) {
+            matchingNodeIDs = append(matchingNodeIDs, vdr.NodeID)
+        }
+    }
+    
+    // Step 3: Query EACH validator individually to get delegator details
+    // CRITICAL: RPC only returns delegators for single-nodeID queries!
+    var validators []Validator
+    for _, nodeID := range matchingNodeIDs {
+        result, err := client.GetCurrentValidators(ctx, constants.PrimaryNetworkID, []string{nodeID})
+        if err != nil {
+            continue
+        }
+        validators = append(validators, result...)
+    }
+    
+    // Step 4: Build results
+    var results []PendingReward
+    now := time.Now().Unix()
+    
+    for _, vdr := range validators {
+        // VALIDATOR entry - if validationRewardOwner matches
+        if hasMatchingAddr(vdr.ValidationRewardOwner.Addresses, queryAddrs) {
+            results = append(results, PendingReward{
+                RewardType: "VALIDATOR",
+                // ... other fields
+            })
+        }
+        
+        // VALIDATOR_FEE entries - if delegationRewardOwner matches
+        // One entry per delegator (validator gets fee from each)
+        if hasMatchingAddr(vdr.DelegationRewardOwner.Addresses, queryAddrs) {
+            for _, del := range vdr.Delegators {
+                fee := splitReward(del.PotentialReward, vdr.DelegationFee)
+                results = append(results, PendingReward{
+                    RewardType: "VALIDATOR_FEE",
+                    TxHash:     del.TxID, // Note: uses delegator's txID
+                    EstimatedReward: fee,
+                    // ... other fields
+                })
+            }
+        }
+        
+        // DELEGATOR entries - if delegator's rewardOwner matches
+        for _, del := range vdr.Delegators {
+            if hasMatchingAddr(del.RewardOwner.Addresses, queryAddrs) {
+                _, delegatorShare := splitReward(del.PotentialReward, vdr.DelegationFee)
+                results = append(results, PendingReward{
+                    RewardType: "DELEGATOR",
+                    EstimatedReward: delegatorShare,
+                    // ... other fields
+                })
+            }
+        }
+    }
+    
+    return results, nil
+}
+
+// splitReward mirrors avalanchego's reward.Split function
+func splitReward(potentialReward uint64, delegationFeePercent float64) (validatorFee, delegatorReward uint64) {
+    delegationShares := uint32(delegationFeePercent * 10000) // 2% = 20000
+    validatorFee = potentialReward * uint64(delegationShares) / 1000000
+    delegatorReward = potentialReward - validatorFee
+    return
+}
+```
+
+## Cache Busting Strategy
+
+### What to Cache
+```
+cache:pending_rewards:{address} → JSON response for this address
+```
+
+### What Busts the Cache
+
+| Transaction Type | Action |
+|-----------------|--------|
+| `AddValidatorTx` | Bust `validationRewardsOwner` addresses |
+| `AddDelegatorTx` | Bust `rewardsOwner` addresses |
+| `AddPermissionlessValidatorTx` | Bust `validationRewardsOwner` addresses |
+| `AddPermissionlessDelegatorTx` | Bust `rewardsOwner` addresses |
+| `RewardValidatorTx` | Lookup original staking tx → bust its reward owner addresses |
+
+### Extracting Reward Owner Addresses from Staking Txs
+
+```go
+func getRewardOwnerAddrs(tx *txs.Tx) []ids.ShortID {
+    switch utx := tx.Unsigned.(type) {
+    case *txs.AddValidatorTx:
+        if owner, ok := utx.RewardsOwner.(*secp256k1fx.OutputOwners); ok {
+            return owner.Addrs
+        }
+    case *txs.AddDelegatorTx:
+        if owner, ok := utx.RewardsOwner.(*secp256k1fx.OutputOwners); ok {
+            return owner.Addrs
+        }
+    case *txs.AddPermissionlessValidatorTx:
+        var addrs []ids.ShortID
+        if owner, ok := utx.ValidationRewardsOwner.(*secp256k1fx.OutputOwners); ok {
+            addrs = append(addrs, owner.Addrs...)
+        }
+        if owner, ok := utx.DelegationRewardsOwner.(*secp256k1fx.OutputOwners); ok {
+            addrs = append(addrs, owner.Addrs...)
+        }
+        return addrs
+    case *txs.AddPermissionlessDelegatorTx:
+        if owner, ok := utx.RewardsOwner.(*secp256k1fx.OutputOwners); ok {
+            return owner.Addrs
+        }
+    }
+    return nil
+}
+```
+
+### Handling RewardValidatorTx
+
+`RewardValidatorTx` only contains the TxID of the original staking tx. To bust the right cache:
+
+**Option A: Index staking txID → reward addresses**
+```
+index:staking_reward_addrs:{txID} → []address
+```
+- On `AddValidator/Delegator`: store `txID → reward owner addresses`
+- On `RewardValidatorTx`: lookup index, bust those addresses, delete index entry
+
+**Option B: Query node for the original tx**
+- On `RewardValidatorTx`: call `platform.getTx(rewardTx.TxID)` to get original staking tx
+- Extract reward owner addresses from it
+- Bust cache
+
+Option A is better — avoids RPC call during block processing.
+
+### Block Processing
+
+```go
+func (idx *PendingRewardsAPI) Process(batch *pebble.Batch, blk block.Block) error {
+    for _, tx := range blk.Txs() {
+        switch utx := tx.Unsigned.(type) {
+        case *txs.AddValidatorTx, *txs.AddDelegatorTx,
+             *txs.AddPermissionlessValidatorTx, *txs.AddPermissionlessDelegatorTx:
+            // New staker added — bust cache for reward owner addresses
+            addrs := getRewardOwnerAddrs(tx)
+            for _, addr := range addrs {
+                batch.Delete(cacheKey("pending_rewards", addr))
+            }
+            // Store index for later RewardValidatorTx handling
+            batch.Set(indexKey("staking_reward_addrs", tx.ID()), encodeAddrs(addrs))
+            
+        case *txs.RewardValidatorTx:
+            // Staker removed — bust cache for reward owner addresses
+            stakingTxID := utx.TxID
+            addrs := lookupStakingRewardAddrs(stakingTxID) // from index
+            for _, addr := range addrs {
+                batch.Delete(cacheKey("pending_rewards", addr))
+            }
+            batch.Delete(indexKey("staking_reward_addrs", stakingTxID))
+        }
+    }
+    return nil
+}
+```
+
+### Time-Based Invalidation: NOT NEEDED
+
+The only time-dependent field is `progress`, which is computed at query time:
+```go
+progress = (now - startTime) / (endTime - startTime)
+```
+
+This doesn't require cache invalidation — it's calculated fresh on each request from the cached staker data.
+
+## This Indexer is 100% Independent
+
+No coordination with other indexers. Receives block, processes it, done.
+
+## What About Actually Pending (Not Started) Stakers?
+
+There's no public `getPendingValidators` RPC. Internally the node tracks pending stakers via `state.GetPendingStakerIterator()`, but this isn't exposed.
+
+**Glacier DOES return pending stakers** (their progress shows percentage, not 0-1 fraction). They index `AddValidatorTx`/`AddDelegatorTx` when committed to blocks, tracking startTime.
+
+To achieve 100% Glacier parity, you need to:
+1. Index staking txs with future startTime
+2. Track them as "pending" until startTime passes
+3. Include them in results even though RPC doesn't return them
+
+For ~85% parity (active stakers only), the RPC approach works.
+
+## Summary
+
+- **RPC Quirk**: Delegators only returned for SINGLE nodeID queries
+- **Query Strategy**: First get all validators, then query each individually
+- **Three reward types**: VALIDATOR, VALIDATOR_FEE (validator's cut of delegator rewards), DELEGATOR
+- **VALIDATOR_FEE calculation**: Uses `delegationFee` percentage from validator
+- **Pending stakers**: Not in RPC, need indexing for 100% Glacier parity
+- **Cache busting**: Index `stakingTxID → []rewardOwnerAddress` for RewardValidatorTx handling
+- **Progress field**: Computed at query time, no time-based cache expiry needed
+- Node already computes `potentialReward` at stake creation time
+

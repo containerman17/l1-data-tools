@@ -1,0 +1,166 @@
+# P-Chain Chain Interactions Endpoint
+
+## Glacier API Example
+
+```bash
+curl --request GET \
+  --url 'https://glacier-api.avax.network/v1/networks/mainnet/addresses:listChainIds?addresses=avax19zfygxaf59stehzedhxjesads0p5jdvfeedal0'
+```
+
+Response:
+```json
+{
+  "addresses": [
+    {
+      "address": "avax19zfygxaf59stehzedhxjesads0p5jdvfeedal0",
+      "blockchainIds": [
+        "11111111111111111111111111111111LpoYY",
+        "2oYMBNV4eNHyqk2fjjV5nVQLDbtmNJzq5s3qs3Lo6ftnC6FByM",
+        "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5"
+      ]
+    }
+  ]
+}
+```
+
+Chain IDs:
+- `11111111111111111111111111111111LpoYY` — P-Chain
+- `2oYMBNV4eNHyqk2fjjV5nVQLDbtmNJzq5s3qs3Lo6ftnC6FByM` — X-Chain
+- `2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5` — C-Chain
+
+## What This Actually Tracks
+
+**Only cross-chain (atomic) interactions visible from Primary Network chains.**
+
+NOT native chain activity. Example proof:
+
+```bash
+# Address with C-Chain EVM activity but NO cross-chain txs
+curl --request GET \
+  --url 'https://glacier-api.avax.network/v1/networks/mainnet/addresses:listChainIds?addresses=avax1jzjfh57wwe9ntp6440rdurwxj3d5j7xe4vf6ff'
+
+# Returns empty!
+{"addresses":[]}
+```
+
+This address has its corresponding 0x address active on C-Chain, but never did Import/Export transactions. So it doesn't show up.
+
+## What P-Chain Can See
+
+| Transaction | Chains Touched |
+|-------------|----------------|
+| Any P-Chain tx with address in outputs | P-Chain |
+| `ExportTx` to X-Chain | P-Chain + X-Chain |
+| `ExportTx` to C-Chain | P-Chain + C-Chain |
+| `ImportTx` from X-Chain | P-Chain + X-Chain |
+| `ImportTx` from C-Chain | P-Chain + C-Chain |
+
+## Implementation: Simple Index
+
+### On Block Processing
+
+```go
+func (idx *ChainInteractions) Process(batch *pebble.Batch, blk block.Block) error {
+    pChainID := ids.FromStringOrPanic("11111111111111111111111111111111LpoYY")
+    
+    for _, tx := range blk.Txs() {
+        // All addresses in outputs touched P-Chain
+        for _, out := range tx.Unsigned.Outputs() {
+            for _, addr := range extractAddrs(out) {
+                addChainForAddr(batch, addr, pChainID)
+            }
+        }
+        
+        switch utx := tx.Unsigned.(type) {
+        case *txs.ExportTx:
+            // Exported outputs touch destination chain
+            for _, out := range utx.ExportedOutputs {
+                for _, addr := range extractAddrs(out) {
+                    addChainForAddr(batch, addr, pChainID)
+                    addChainForAddr(batch, addr, utx.DestinationChain)
+                }
+            }
+            
+        case *txs.ImportTx:
+            // Imported inputs touched source chain
+            // But we don't have addresses from inputs directly...
+            // The output addresses touched both P-Chain and source
+            for _, out := range tx.Unsigned.Outputs() {
+                for _, addr := range extractAddrs(out) {
+                    addChainForAddr(batch, addr, pChainID)
+                    addChainForAddr(batch, addr, utx.SourceChain)
+                }
+            }
+        }
+    }
+    return nil
+}
+
+func addChainForAddr(batch *pebble.Batch, addr ids.ShortID, chainID ids.ID) {
+    // Key: chains:{addr}:{chainID} → empty (set membership)
+    key := fmt.Sprintf("chains:%s:%s", addr, chainID)
+    batch.Set([]byte(key), nil, pebble.NoSync)
+}
+```
+
+### On Query
+
+```go
+func listChainIds(addrs []ids.ShortID) map[ids.ShortID][]ids.ID {
+    result := make(map[ids.ShortID][]ids.ID)
+    
+    for _, addr := range addrs {
+        prefix := fmt.Sprintf("chains:%s:", addr)
+        iter := db.NewIter(&pebble.IterOptions{
+            LowerBound: []byte(prefix),
+            UpperBound: []byte(prefix + "\xff"),
+        })
+        
+        var chains []ids.ID
+        for iter.First(); iter.Valid(); iter.Next() {
+            // Extract chainID from key suffix
+            chainID := extractChainIDFromKey(iter.Key())
+            chains = append(chains, chainID)
+        }
+        iter.Close()
+        
+        if len(chains) > 0 {
+            result[addr] = chains
+        }
+    }
+    return result
+}
+```
+
+## DB Schema
+
+```
+chains:{address}:{chainID} → empty
+```
+
+This is a set — just checking key existence. No value needed.
+
+## Cache Busting: NOT NEEDED
+
+This data is append-only. Once an address touches a chain, it's permanent.
+No cache needed — direct DB lookup is fast (key prefix scan).
+
+## Limitations
+
+This P-Chain indexer can only track:
+- P-Chain activity (any tx)
+- Cross-chain activity via Export/Import
+
+It CANNOT track:
+- Native X-Chain UTXOs (need X-Chain indexer)
+- Native C-Chain EVM txs (need C-Chain indexer, different address format)
+
+To get complete chain interaction data, you'd need to index all 3 chains and merge results.
+
+## Summary
+
+- **Simple append-only index** — no cache busting
+- Track address → set of chainIDs
+- P-Chain sees: P-Chain activity + Export/Import cross-chain
+- Does NOT see native X/C chain activity
+

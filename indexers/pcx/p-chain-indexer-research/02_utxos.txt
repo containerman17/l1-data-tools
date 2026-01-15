@@ -1,0 +1,209 @@
+# P-Chain UTXOs Endpoint
+
+## Glacier API Example Response
+```json
+{
+  "utxos": [
+    {
+      "addresses": ["avax19zfygxaf59stehzedhxjesads0p5jdvfeedal0"],
+      "utxoId": "29TBrP58DXP1sN7XpMrB4wYqiyXqCFntTm6oLGjd9VHEVx5rfX",
+      "txHash": "PGGxiLLko7wBE5tRrSkJHSiH7fhPoASmfnMCmQtR4Stx5tb4P",
+      "outputIndex": 1,
+      "blockTimestamp": 1759623439,
+      "blockNumber": "22799104",
+      "consumingTxHash": "o7qVVxToiD5SM9FprVENDJgfokxMVY7FHF9uD2tG9CZY1Lbnw",
+      "consumingBlockTimestamp": 1759623444,
+      "consumingBlockNumber": "69780797",
+      "assetId": "FvwEAhmxKfeiG8SnEvq42hc6whRyY3EFYAvebMqDNDGCgxN5Z",
+      "utxoType": "TRANSFER",
+      "amount": "2883855455977",
+      "threshold": 1,
+      "createdOnChainId": "11111111111111111111111111111111LpoYY",
+      "consumedOnChainId": "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5",
+      "staked": false
+    }
+  ]
+}
+```
+
+## Implementation Strategy: Cache Busting
+
+### On Each Block
+1. Parse block using `block.Parse(block.Codec, blockBytes)`
+2. For each tx in block, extract all addresses from inputs and outputs
+3. Delete cache: `DEL utxos:{address}` for each address
+
+### On Query GET /utxos?addresses=X,Y,Z
+1. Check cache
+2. Cache miss → `platform.getUTXOs(addresses)`
+3. Transform to Glacier format, cache, return
+
+## Address Extraction from Transactions
+
+All P-Chain txs implement `UnsignedTx` interface:
+- `tx.InputIDs()` — set of consumed UTXO IDs (not addresses directly!)
+- `tx.Unsigned.Outputs()` — produced outputs
+
+### Getting Addresses from Outputs
+
+```go
+import (
+    "github.com/ava-labs/avalanchego/vms/platformvm/block"
+    "github.com/ava-labs/avalanchego/vms/platformvm/txs"
+    "github.com/ava-labs/avalanchego/vms/components/avax"
+    "github.com/ava-labs/avalanchego/vms/secp256k1fx"
+    "github.com/ava-labs/avalanchego/vms/platformvm/stakeable"
+)
+
+func extractAddressesFromBlock(blk block.Block) []ids.ShortID {
+    var addrs []ids.ShortID
+    
+    for _, tx := range blk.Txs() {
+        // From outputs
+        for _, out := range tx.Unsigned.Outputs() {
+            addrs = append(addrs, extractFromOutput(out.Out)...)
+        }
+        
+        // Handle tx-specific outputs (stake outputs, exported outputs, etc.)
+        switch utx := tx.Unsigned.(type) {
+        case *txs.AddValidatorTx:
+            for _, out := range utx.StakeOuts {
+                addrs = append(addrs, extractFromOutput(out.Out)...)
+            }
+            addrs = append(addrs, extractFromOwner(utx.RewardsOwner)...)
+        case *txs.AddDelegatorTx:
+            for _, out := range utx.StakeOuts {
+                addrs = append(addrs, extractFromOutput(out.Out)...)
+            }
+            addrs = append(addrs, extractFromOwner(utx.RewardsOwner)...)
+        case *txs.ExportTx:
+            for _, out := range utx.ExportedOutputs {
+                addrs = append(addrs, extractFromOutput(out.Out)...)
+            }
+        case *txs.ImportTx:
+            // ImportedInputs reference UTXOs from other chain
+            // We need addresses from the outputs, already covered above
+        }
+        
+        // From inputs (need to look up the UTXO being spent to get address)
+        // This is tricky - inputs only have UTXO ID, not address
+        // Option 1: Skip input addresses (outputs cover most cases)
+        // Option 2: Query node for each input UTXO (expensive)
+        // Option 3: Maintain minimal UTXO→address index
+    }
+    
+    return dedupe(addrs)
+}
+
+func extractFromOutput(out interface{}) []ids.ShortID {
+    switch o := out.(type) {
+    case *secp256k1fx.TransferOutput:
+        return o.Addrs
+    case *stakeable.LockOut:
+        if inner, ok := o.TransferableOut.(*secp256k1fx.TransferOutput); ok {
+            return inner.Addrs
+        }
+    }
+    return nil
+}
+
+func extractFromOwner(owner interface{}) []ids.ShortID {
+    if o, ok := owner.(*secp256k1fx.OutputOwners); ok {
+        return o.Addrs
+    }
+    return nil
+}
+```
+
+### The Input Address Problem
+
+Inputs only contain UTXO IDs, not addresses. To invalidate cache for sender:
+
+**Option A: Output-only invalidation**
+- Only invalidate addresses in outputs
+- Sender's cache stays stale until they receive funds
+- PROBLEM: sender sees spent UTXO until they transact again
+
+**Option B: Minimal UTXO→Address index**
+- On each block, store: `utxoID → []address` for new UTXOs
+- On input consumption, lookup address, delete both cache AND index entry
+- Small storage overhead, correct invalidation
+
+**Option C: Query node for input UTXOs**
+- For each input, call `platform.getUTXOs` or fetch from node state
+- Expensive, defeats purpose of indexer
+
+**Recommendation: Option B** — maintain small index just for cache invalidation.
+
+```go
+// DB keys:
+// "utxo-addr:{utxoID}" → []address (for invalidation lookup)
+// "cache:utxos:{address}" → cached UTXO list
+// "cache:balances:{address}" → cached balance
+
+func processBlock(batch *pebble.Batch, blk block.Block) {
+    addrsToDirty := make(map[ids.ShortID]struct{})
+    
+    for _, tx := range blk.Txs() {
+        // Invalidate senders (via index lookup)
+        for inputID := range tx.InputIDs() {
+            addrs := lookupUTXOAddrs(inputID)
+            for _, addr := range addrs {
+                addrsToDirty[addr] = struct{}{}
+            }
+            batch.Delete(utxoAddrKey(inputID)) // cleanup index
+        }
+        
+        // Index new UTXOs and invalidate receivers
+        for _, utxo := range tx.UTXOs() {
+            addrs := extractFromOutput(utxo.Out)
+            batch.Set(utxoAddrKey(utxo.InputID()), encodeAddrs(addrs))
+            for _, addr := range addrs {
+                addrsToDirty[addr] = struct{}{}
+            }
+        }
+    }
+    
+    // Invalidate all dirty caches
+    for addr := range addrsToDirty {
+        batch.Delete(cacheKey("utxos", addr))
+        batch.Delete(cacheKey("balances", addr))
+    }
+}
+```
+
+## Node RPC for Cache Miss
+
+```go
+func fetchUTXOs(client platformvm.Client, addrs []ids.ShortID) ([]*avax.UTXO, error) {
+    var allUTXOs [][]byte
+    var startAddr ids.ShortID
+    var startUTXO ids.ID
+    
+    for {
+        utxoBytes, endAddr, endUTXO, err := client.GetUTXOs(
+            ctx, addrs, 1024, startAddr, startUTXO,
+        )
+        if err != nil {
+            return nil, err
+        }
+        allUTXOs = append(allUTXOs, utxoBytes...)
+        if len(utxoBytes) < 1024 {
+            break
+        }
+        startAddr, startUTXO = endAddr, endUTXO
+    }
+    
+    // Parse utxoBytes using txs.Codec
+    // ...
+}
+```
+
+## Glacier Response Enrichment
+
+Node returns raw UTXO bytes. To match Glacier format, enrich with:
+- `blockTimestamp`, `blockNumber` — need to index tx metadata separately OR skip these fields
+- `consumingTxHash`, etc. — only for spent UTXOs (Glacier's includeSpent=true)
+- `staked` — cross-reference with getCurrentValidators
+
+For MVP, skip historical fields (consuming*, blockNumber) and just return current UTXO state.

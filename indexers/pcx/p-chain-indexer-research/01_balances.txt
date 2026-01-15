@@ -1,0 +1,100 @@
+# P-Chain Balances Endpoint
+
+## Glacier API Example Response
+```json
+{
+  "balances": {
+    "unlockedStaked": [],
+    "unlockedUnstaked": [
+      {
+        "assetId": "FvwEAhmxKfeiG8SnEvq42hc6whRyY3EFYAvebMqDNDGCgxN5Z",
+        "name": "Avalanche",
+        "symbol": "AVAX",
+        "denomination": 9,
+        "type": "secp256k1",
+        "amount": "32010196285",
+        "utxoCount": 109
+      }
+    ],
+    "lockedStaked": [],
+    "lockedPlatform": [],
+    "lockedStakeable": [],
+    "pendingStaked": [],
+    "atomicMemoryLocked": [],
+    "atomicMemoryUnlocked": [...]
+  }
+}
+```
+
+## What is Balance?
+
+Balance = sum of UTXOs owned by address(es), categorized by lock state.
+
+Categories:
+- `unlockedUnstaked` — spendable right now (UTXO locktime <= now, not staked)
+- `unlockedStaked` — currently staked, no time-lock on principal
+- `lockedStaked` — staked AND time-locked
+- `lockedPlatform` — time-locked, can't stake (secp256k1fx.TransferOutput with locktime > now)
+- `lockedStakeable` — time-locked but CAN stake (stakeable.LockOut where stakeable locktime hasn't passed)
+- `pendingStaked` — validator/delegator submitted but startTime > now
+- `atomicMemoryUnlocked` — exported to another chain, not yet imported (in shared memory)
+- `atomicMemoryLocked` — same but time-locked
+
+## Implementation Strategy: Cache Busting
+
+We do NOT track UTXOs ourselves. Node is source of truth.
+
+### On Each Block
+1. Parse block, extract all addresses mentioned in inputs/outputs
+2. Delete cache key for each address: `DEL balances:{address}`
+
+### On Query GET /balances?addresses=X,Y,Z
+1. Check cache for each address
+2. Cache miss → call node RPC `platform.getUTXOs(address)`
+3. Classify UTXOs into categories (see classification logic below)
+4. Cache result, return aggregated response
+
+### UTXO Classification Logic (from avalanchego service.go)
+
+```go
+currentTime := time.Now().Unix()
+
+for _, utxo := range utxos {
+    switch out := utxo.Out.(type) {
+    case *secp256k1fx.TransferOutput:
+        if out.Locktime <= currentTime {
+            // unlocked
+        } else {
+            // lockedPlatform (lockedNotStakeable)
+        }
+    case *stakeable.LockOut:
+        innerOut := out.TransferableOut.(*secp256k1fx.TransferOutput)
+        if innerOut.Locktime > currentTime {
+            // lockedPlatform
+        } else if out.Locktime <= currentTime {
+            // unlocked
+        } else {
+            // lockedStakeable
+        }
+    }
+}
+```
+
+### For Staked Categories
+Need to cross-reference with current validators/delegators:
+- `platform.getCurrentValidators()` — active stakers
+- `platform.getPendingValidators()` — pending stakers
+
+If a UTXO is stake output from an active validator/delegator → it's `*Staked`.
+
+### For Atomic Memory
+Call `platform.getUTXOs(address, sourceChain=X-Chain)` and `platform.getUTXOs(address, sourceChain=C-Chain)` to get UTXOs in shared memory.
+
+## Node RPC Methods Needed
+- `platform.getUTXOs` — get UTXOs for address (supports sourceChain param for atomic)
+- `platform.getCurrentValidators` — active validators/delegators
+- `platform.getPendingValidators` — pending validators/delegators
+
+## Address Extraction from Block
+
+See 02_utxos.txt for how to extract addresses from transactions.

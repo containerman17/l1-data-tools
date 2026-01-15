@@ -1,0 +1,330 @@
+@add_delegator_tx.go (30-39)
+type AddDelegatorTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// Describes the delegatee
+	Validator `serialize:"true" json:"validator"`
+	// Where to send staked tokens when done validating
+	StakeOuts []*avax.TransferableOutput `serialize:"true" json:"stake"`
+	// Where to send staking rewards when done validating
+	DelegationRewardsOwner fx.Owner `serialize:"true" json:"rewardsOwner"`
+}
+// AddDelegatorTx is used to add a delegator to the Primary Network (Apricot phase). It specifies the validator to delegate to, the stake amount, and reward ownership.
+
+@add_permissionless_delegator_tx.go (26-37)
+type AddPermissionlessDelegatorTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// Describes the validator
+	Validator `serialize:"true" json:"validator"`
+	// ID of the subnet this validator is validating
+	Subnet ids.ID `serialize:"true" json:"subnetID"`
+	// Where to send staked tokens when done validating
+	StakeOuts []*avax.TransferableOutput `serialize:"true" json:"stake"`
+	// Where to send staking rewards when done validating
+	DelegationRewardsOwner fx.Owner `serialize:"true" json:"rewardsOwner"`
+}
+// AddPermissionlessDelegatorTx allows adding a delegator to a permissionless subnet (or Primary Network in Banff phase). It includes the subnet ID target.
+
+@add_permissionless_validator_tx.go (35-59)
+type AddPermissionlessValidatorTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// Describes the validator
+	Validator `serialize:"true" json:"validator"`
+	// ID of the subnet this validator is validating
+	Subnet ids.ID `serialize:"true" json:"subnetID"`
+	// If the [Subnet] is the primary network, [Signer] is the BLS key for this
+	// validator. If the [Subnet] is not the primary network, this value is the
+	// empty signer
+	// Note: We do not enforce that the BLS key is unique across all validators.
+	//       This means that validators can share a key if they so choose.
+	//       However, a NodeID does uniquely map to a BLS key
+	Signer signer.Signer `serialize:"true" json:"signer"`
+	// Where to send staked tokens when done validating
+	StakeOuts []*avax.TransferableOutput `serialize:"true" json:"stake"`
+	// Where to send validation rewards when done validating
+	ValidatorRewardsOwner fx.Owner `serialize:"true" json:"validationRewardsOwner"`
+	// Where to send delegation rewards when done validating
+	DelegatorRewardsOwner fx.Owner `serialize:"true" json:"delegationRewardsOwner"`
+	// Fee this validator charges delegators as a percentage, times 10,000
+	// For example, if this validator has DelegationShares=300,000 then they
+	// take 30% of rewards from delegators
+	DelegationShares uint32 `serialize:"true" json:"shares"`
+}
+// AddPermissionlessValidatorTx adds a validator to a permissionless subnet. It includes BLS signer keys, reward owners for both validation and delegation, and the delegation fee share.
+
+@add_subnet_validator_tx.go (24-31)
+type AddSubnetValidatorTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// The validator
+	SubnetValidator `serialize:"true" json:"validator"`
+	// Auth that will be allowing this validator into the network
+	SubnetAuth verify.Verifiable `serialize:"true" json:"subnetAuthorization"`
+}
+// AddSubnetValidatorTx adds a validator to a permissioned subnet. It requires subnet authorization to prove the right to add the validator.
+
+@add_validator_tx.go (29-42)
+type AddValidatorTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// Describes the delegatee
+	Validator `serialize:"true" json:"validator"`
+	// Where to send staked tokens when done validating
+	StakeOuts []*avax.TransferableOutput `serialize:"true" json:"stake"`
+	// Where to send staking rewards when done validating
+	RewardsOwner fx.Owner `serialize:"true" json:"rewardsOwner"`
+	// Fee this validator charges delegators as a percentage, times 10,000
+	// For example, if this validator has DelegationShares=300,000 then they
+	// take 30% of rewards from delegators
+	DelegationShares uint32 `serialize:"true" json:"shares"`
+}
+// AddValidatorTx adds a validator to the Primary Network (legacy/standard). It specifies stake outputs, reward owner, and delegation shares.
+
+@advance_time_tx.go (23-28)
+type AdvanceTimeTx struct {
+	// Unix time this block proposes increasing the timestamp to
+	Time uint64 `serialize:"true" json:"time"`
+
+	unsignedBytes []byte // Unsigned byte representation of this data
+}
+// AdvanceTimeTx proposes increasing the chain's timestamp. It triggers updates to the staker set when accepted and followed by a commit.
+
+@base_tx.go (29-36)
+type BaseTx struct {
+	avax.BaseTx `serialize:"true"`
+
+	// true iff this transaction has already passed syntactic verification
+	SyntacticallyVerified bool `json:"-"`
+
+	unsignedBytes []byte // Unsigned byte representation of this data
+}
+// BaseTx is a struct embedded in other transactions containing common fields like inputs, outputs, and metadata.
+
+@convert_subnet_to_l1_tx.go (34-47)
+type ConvertSubnetToL1Tx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// ID of the Subnet to transform
+	Subnet ids.ID `serialize:"true" json:"subnetID"`
+	// Chain where the Subnet manager lives
+	ChainID ids.ID `serialize:"true" json:"chainID"`
+	// Address of the Subnet manager
+	Address types.JSONByteSlice `serialize:"true" json:"address"`
+	// Initial pay-as-you-go validators for the Subnet
+	Validators []*ConvertSubnetToL1Validator `serialize:"true" json:"validators"`
+	// Authorizes this conversion
+	SubnetAuth verify.Verifiable `serialize:"true" json:"subnetAuthorization"`
+}
+// ConvertSubnetToL1Tx transforms a Subnet into a Layer 1 (L1) chain. It defines the manager location, initial validators, and includes subnet authorization.
+
+@create_chain_tx.go (36-51)
+type CreateChainTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// ID of the Subnet that validates this blockchain
+	SubnetID ids.ID `serialize:"true" json:"subnetID"`
+	// A human readable name for the chain; need not be unique
+	ChainName string `serialize:"true" json:"chainName"`
+	// ID of the VM running on the new chain
+	VMID ids.ID `serialize:"true" json:"vmID"`
+	// IDs of the feature extensions running on the new chain
+	FxIDs []ids.ID `serialize:"true" json:"fxIDs"`
+	// Byte representation of genesis state of the new chain
+	GenesisData []byte `serialize:"true" json:"genesisData"`
+	// Authorizes this blockchain to be added to this subnet
+	SubnetAuth verify.Verifiable `serialize:"true" json:"subnetAuthorization"`
+}
+// CreateChainTx creates a new blockchain within a specified subnet. It defines the VM, genesis data, chain name, and requires subnet authorization.
+
+@create_subnet_tx.go (14-19)
+type CreateSubnetTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// Who is authorized to manage this subnet
+	Owner fx.Owner `serialize:"true" json:"owner"`
+}
+// CreateSubnetTx proposes the creation of a new subnet. It specifies the owner who will have management rights over the subnet.
+
+@disable_l1_validator_tx.go (14-21)
+type DisableL1ValidatorTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// ID corresponding to the validator
+	ValidationID ids.ID `serialize:"true" json:"validationID"`
+	// Authorizes this validator to be disabled
+	DisableAuth verify.Verifiable `serialize:"true" json:"disableAuthorization"`
+}
+// DisableL1ValidatorTx allows disabling an L1 validator. It requires authorization to perform the disable action.
+
+@export_tx.go (25-33)
+type ExportTx struct {
+	BaseTx `serialize:"true"`
+
+	// Which chain to send the funds to
+	DestinationChain ids.ID `serialize:"true" json:"destinationChain"`
+
+	// Outputs that are exported to the chain
+	ExportedOutputs []*avax.TransferableOutput `serialize:"true" json:"exportedOutputs"`
+}
+// ExportTx moves assets from the Platform Chain (P-Chain) to another chain (e.g., X-Chain or C-Chain). It specifies the destination chain and the outputs to export.
+
+@import_tx.go (25-33)
+type ImportTx struct {
+	BaseTx `serialize:"true"`
+
+	// Which chain to consume the funds from
+	SourceChain ids.ID `serialize:"true" json:"sourceChain"`
+
+	// Inputs that consume UTXOs produced on the chain
+	ImportedInputs []*avax.TransferableInput `serialize:"true" json:"importedInputs"`
+}
+// ImportTx brings assets into the P-Chain from another chain. It consumes exported UTXOs from a source chain.
+
+@increase_l1_validator_balance_tx.go (19-26)
+type IncreaseL1ValidatorBalanceTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// ID corresponding to the validator
+	ValidationID ids.ID `serialize:"true" json:"validationID"`
+	// Balance <= sum($AVAX inputs) - sum($AVAX outputs) - TxFee
+	Balance uint64 `serialize:"true" json:"balance"`
+}
+// IncreaseL1ValidatorBalanceTx adds more AVAX balance to an existing L1 validator's stake or account.
+
+@register_l1_validator_tx.go (14-24)
+type RegisterL1ValidatorTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// Balance <= sum($AVAX inputs) - sum($AVAX outputs) - TxFee.
+	Balance uint64 `serialize:"true" json:"balance"`
+	// ProofOfPossession of the BLS key that is included in the Message.
+	ProofOfPossession [bls.SignatureLen]byte `serialize:"true" json:"proofOfPossession"`
+	// Message is expected to be a signed Warp message containing an
+	// AddressedCall payload with the RegisterL1Validator message.
+	Message types.JSONByteSlice `serialize:"true" json:"message"`
+}
+// RegisterL1ValidatorTx registers a new validator on an L1. It includes a BLS Proof of Possession and a signed Warp message.
+
+@remove_subnet_validator_tx.go (22-30)
+type RemoveSubnetValidatorTx struct {
+	BaseTx `serialize:"true"`
+	// The node to remove from the subnet.
+	NodeID ids.NodeID `serialize:"true" json:"nodeID"`
+	// The subnet to remove the node from.
+	Subnet ids.ID `serialize:"true" json:"subnetID"`
+	// Proves that the issuer has the right to remove the node from the subnet.
+	SubnetAuth verify.Verifiable `serialize:"true" json:"subnetAuthorization"`
+}
+// RemoveSubnetValidatorTx removes a validator from a permissioned subnet. It requires subnet authorization to validate the removal.
+
+@reward_validator_tx.go (25-30)
+type RewardValidatorTx struct {
+	// ID of the tx that created the delegator/validator being removed/rewarded
+	TxID ids.ID `serialize:"true" json:"txID"`
+
+	unsignedBytes []byte // Unsigned byte representation of this data
+}
+// RewardValidatorTx is a system transaction that removes a validator/delegator when their staking period ends and distributes rewards if applicable.
+
+@set_l1_validator_weight_tx.go (13-19)
+type SetL1ValidatorWeightTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// Message is expected to be a signed Warp message containing an
+	// AddressedCall payload with the SetL1ValidatorWeight message.
+	Message types.JSONByteSlice `serialize:"true" json:"message"`
+}
+// SetL1ValidatorWeightTx updates the weight of an L1 validator. It uses a signed Warp message to authorize and specify the weight change.
+
+@transfer_subnet_ownership_tx.go (22-31)
+type TransferSubnetOwnershipTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// ID of the subnet this tx is modifying
+	Subnet ids.ID `serialize:"true" json:"subnetID"`
+	// Proves that the issuer has the right to remove the node from the subnet.
+	SubnetAuth verify.Verifiable `serialize:"true" json:"subnetAuthorization"`
+	// Who is now authorized to manage this subnet
+	Owner fx.Owner `serialize:"true" json:"newOwner"`
+}
+// TransferSubnetOwnershipTx transfers the ownership/management authority of a permissioned subnet to a new owner.
+
+@transform_subnet_tx.go (40-113)
+type TransformSubnetTx struct {
+	// Metadata, inputs and outputs
+	BaseTx `serialize:"true"`
+	// ID of the Subnet to transform
+	// Restrictions:
+	// - Must not be the Primary Network ID
+	Subnet ids.ID `serialize:"true" json:"subnetID"`
+	// Asset to use when staking on the Subnet
+	// Restrictions:
+	// - Must not be the Empty ID
+	// - Must not be the AVAX ID
+	AssetID ids.ID `serialize:"true" json:"assetID"`
+	// Amount to initially specify as the current supply
+	// Restrictions:
+	// - Must be > 0
+	InitialSupply uint64 `serialize:"true" json:"initialSupply"`
+	// Amount to specify as the maximum token supply
+	// Restrictions:
+	// - Must be >= [InitialSupply]
+	MaximumSupply uint64 `serialize:"true" json:"maximumSupply"`
+	// MinConsumptionRate is the rate to allocate funds if the validator's stake
+	// duration is 0
+	MinConsumptionRate uint64 `serialize:"true" json:"minConsumptionRate"`
+	// MaxConsumptionRate is the rate to allocate funds if the validator's stake
+	// duration is equal to the minting period
+	// Restrictions:
+	// - Must be >= [MinConsumptionRate]
+	// - Must be <= [reward.PercentDenominator]
+	MaxConsumptionRate uint64 `serialize:"true" json:"maxConsumptionRate"`
+	// MinValidatorStake is the minimum amount of funds required to become a
+	// validator.
+	// Restrictions:
+	// - Must be > 0
+	// - Must be <= [InitialSupply]
+	MinValidatorStake uint64 `serialize:"true" json:"minValidatorStake"`
+	// MaxValidatorStake is the maximum amount of funds a single validator can
+	// be allocated, including delegated funds.
+	// Restrictions:
+	// - Must be >= [MinValidatorStake]
+	// - Must be <= [MaximumSupply]
+	MaxValidatorStake uint64 `serialize:"true" json:"maxValidatorStake"`
+	// MinStakeDuration is the minimum number of seconds a staker can stake for.
+	// Restrictions:
+	// - Must be > 0
+	MinStakeDuration uint32 `serialize:"true" json:"minStakeDuration"`
+	// MaxStakeDuration is the maximum number of seconds a staker can stake for.
+	// Restrictions:
+	// - Must be >= [MinStakeDuration]
+	// - Must be <= [GlobalMaxStakeDuration]
+	MaxStakeDuration uint32 `serialize:"true" json:"maxStakeDuration"`
+	// MinDelegationFee is the minimum percentage a validator must charge a
+	// delegator for delegating.
+	// Restrictions:
+	// - Must be <= [reward.PercentDenominator]
+	MinDelegationFee uint32 `serialize:"true" json:"minDelegationFee"`
+	// MinDelegatorStake is the minimum amount of funds required to become a
+	// delegator.
+	// Restrictions:
+	// - Must be > 0
+	MinDelegatorStake uint64 `serialize:"true" json:"minDelegatorStake"`
+	// MaxValidatorWeightFactor is the factor which calculates the maximum
+	// amount of delegation a validator can receive.
+	// Note: a value of 1 effectively disables delegation.
+	// Restrictions:
+	// - Must be > 0
+	MaxValidatorWeightFactor byte `serialize:"true" json:"maxValidatorWeightFactor"`
+	// UptimeRequirement is the minimum percentage a validator must be online
+	// and responsive to receive a reward.
+	// Restrictions:
+	// - Must be <= [reward.PercentDenominator]
+	UptimeRequirement uint32 `serialize:"true" json:"uptimeRequirement"`
+	// Authorizes this transformation
+	SubnetAuth verify.Verifiable `serialize:"true" json:"subnetAuthorization"`
+}
+// TransformSubnetTx converts a permissioned subnet into a permissionless one (Elastic Subnet). It defines the staking parameters (asset, supply, limits, fees) for the transformed subnet.
+

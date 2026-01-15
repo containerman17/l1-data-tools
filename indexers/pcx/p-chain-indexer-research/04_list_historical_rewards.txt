@@ -1,0 +1,280 @@
+# P-Chain Historical Rewards Endpoint
+
+## Glacier API Example Response
+```json
+{
+  "historicalRewards": [
+    {
+      "addresses": ["avax13rs52le7yllu3fcgpgvn75elpzqvk79g269frk"],
+      "txHash": "nYyHbbXA9J3ovnmVrRU5vSGWWsuy9ke8y9TCaGT9jBS8YYvxG",
+      "utxoId": "2KFRpJq4e2pmNu6buZXJcjmcjprEAHjoabd3Y85rYj2nE4a5ph",
+      "outputIndex": 2,
+      "amountStaked": "294109588195024",
+      "nodeId": "NodeID-BtCqHByhBS52cvAcJMcTSRFBhmD1fsNvJ",
+      "startTimestamp": 1763846281,
+      "endTimestamp": 1765224000,
+      "reward": {
+        "assetId": "FvwEAhmxKfeiG8SnEvq42hc6whRyY3EFYAvebMqDNDGCgxN5Z",
+        "amount": "708950452693"
+      },
+      "rewardType": "VALIDATOR",
+      "rewardTxHash": "2mVH8YKbL4tNSFKvu89bFMBhkY5NQ7mZDo8RT4xu6xm3sVWoHt"
+    }
+  ]
+}
+```
+
+## How it Differs from Pending Rewards (03)
+
+| Aspect | Pending (03) | Historical (04) |
+|--------|-------------|-----------------|
+| Staker state | Currently active | Completed (staking ended) |
+| Reward | `potentialReward` (estimate) | Actual reward paid |
+| Data source | `getCurrentValidators` | Must index |
+| Trigger | Query current stakers | `RewardValidatorTx` processed |
+
+## The Problem: RewardValidatorTx Has Almost Nothing
+
+```go
+type RewardValidatorTx struct {
+    TxID ids.ID  // ← Only this! The original staking tx ID
+}
+```
+
+No addresses, no amounts, no nodeID. Just a reference to the original staking tx.
+
+The reward UTXOs are created during execution and stored separately:
+- Key: original staking txID (NOT the RewardValidatorTx ID)
+- Node API: `platform.getRewardUTXOs(stakingTxID)` → returns reward UTXOs
+
+## Implementation: Requires Real Indexing
+
+Unlike pending rewards (pure proxy), historical rewards **requires indexing staking transactions**.
+
+### Step 1: Index Staking Txs When Created
+
+On `AddValidatorTx` / `AddDelegatorTx` / `AddPermissionless*`:
+
+```go
+type StakingRecord struct {
+    TxID           ids.ID
+    RewardAddrs    []ids.ShortID  // who receives the reward
+    NodeID         ids.NodeID
+    StakeAmount    uint64
+    StartTime      uint64
+    EndTime        uint64
+    RewardType     string         // "VALIDATOR" or "DELEGATOR"
+    // Filled later:
+    RewardTxHash   ids.ID         // RewardValidatorTx that completed this
+    RewardAmount   uint64         // actual reward (from getRewardUTXOs)
+    RewardUTXOID   ids.ID
+    Completed      bool
+}
+```
+
+Store:
+```
+staking:{stakingTxID} → StakingRecord
+index:staking_by_addr:{address} → []stakingTxID
+```
+
+### Step 2: On RewardValidatorTx — Mark Completed + Fetch Reward
+
+```go
+func processRewardValidatorTx(batch *pebble.Batch, rewardTx *txs.Tx, blk block.Block) error {
+    utx := rewardTx.Unsigned.(*txs.RewardValidatorTx)
+    stakingTxID := utx.TxID
+    
+    // Load the staking record we indexed earlier
+    record, err := loadStakingRecord(stakingTxID)
+    if err != nil {
+        return err
+    }
+    
+    // Fetch actual reward from node (one-time call at index time)
+    rewardUTXOs, err := client.GetRewardUTXOs(ctx, stakingTxID)
+    if err != nil {
+        return err
+    }
+    
+    // Find the reward UTXO (there may be multiple for validator with delegatee rewards)
+    var rewardAmount uint64
+    var rewardUTXOID ids.ID
+    for _, utxo := range rewardUTXOs {
+        // Match by reward owner addresses
+        if matchesAddresses(utxo.Out, record.RewardAddrs) {
+            rewardAmount = utxo.Out.(*secp256k1fx.TransferOutput).Amount()
+            rewardUTXOID = utxo.InputID()
+            break
+        }
+    }
+    
+    // Update record
+    record.Completed = true
+    record.RewardTxHash = rewardTx.ID()
+    record.RewardAmount = rewardAmount
+    record.RewardUTXOID = rewardUTXOID
+    
+    saveStakingRecord(batch, record)
+    
+    // Bust pending rewards cache (staker is no longer pending)
+    for _, addr := range record.RewardAddrs {
+        batch.Delete(cacheKey("pending_rewards", addr))
+    }
+    
+    return nil
+}
+```
+
+### Step 3: Query Historical Rewards
+
+```go
+func listHistoricalRewards(address ids.ShortID, pageSize int, cursor string) ([]HistoricalReward, error) {
+    // Get all staking txIDs for this address
+    stakingTxIDs := loadStakingTxIDsForAddr(address)
+    
+    var results []HistoricalReward
+    for _, txID := range stakingTxIDs {
+        record := loadStakingRecord(txID)
+        if !record.Completed {
+            continue // still pending, skip
+        }
+        
+        results = append(results, HistoricalReward{
+            Addresses:      record.RewardAddrs,
+            TxHash:         record.TxID,
+            UTXOId:         record.RewardUTXOID,
+            AmountStaked:   record.StakeAmount,
+            NodeID:         record.NodeID,
+            StartTimestamp: record.StartTime,
+            EndTimestamp:   record.EndTime,
+            Reward:         record.RewardAmount,
+            RewardType:     record.RewardType,
+            RewardTxHash:   record.RewardTxHash,
+        })
+    }
+    
+    // Sort by endTimestamp desc, paginate
+    return paginate(results, pageSize, cursor), nil
+}
+```
+
+## Extracting Data from Staking Txs
+
+```go
+func extractStakingRecord(tx *txs.Tx) *StakingRecord {
+    switch utx := tx.Unsigned.(type) {
+    case *txs.AddValidatorTx:
+        return &StakingRecord{
+            TxID:        tx.ID(),
+            RewardAddrs: getOwnerAddrs(utx.RewardsOwner),
+            NodeID:      utx.NodeID(),
+            StakeAmount: utx.Weight(),
+            StartTime:   utx.StartTime().Unix(),
+            EndTime:     utx.EndTime().Unix(),
+            RewardType:  "VALIDATOR",
+        }
+    case *txs.AddDelegatorTx:
+        return &StakingRecord{
+            TxID:        tx.ID(),
+            RewardAddrs: getOwnerAddrs(utx.RewardsOwner),
+            NodeID:      utx.NodeID(),
+            StakeAmount: utx.Weight(),
+            StartTime:   utx.StartTime().Unix(),
+            EndTime:     utx.EndTime().Unix(),
+            RewardType:  "DELEGATOR",
+        }
+    case *txs.AddPermissionlessValidatorTx:
+        return &StakingRecord{
+            TxID:        tx.ID(),
+            RewardAddrs: getOwnerAddrs(utx.ValidationRewardsOwner),
+            NodeID:      utx.NodeID(),
+            StakeAmount: utx.Weight(),
+            StartTime:   utx.StartTime().Unix(),
+            EndTime:     utx.EndTime().Unix(),
+            RewardType:  "VALIDATOR",
+        }
+    case *txs.AddPermissionlessDelegatorTx:
+        return &StakingRecord{
+            TxID:        tx.ID(),
+            RewardAddrs: getOwnerAddrs(utx.RewardsOwner),
+            NodeID:      utx.NodeID(),
+            StakeAmount: utx.Weight(),
+            StartTime:   utx.StartTime().Unix(),
+            EndTime:     utx.EndTime().Unix(),
+            RewardType:  "DELEGATOR",
+        }
+    }
+    return nil
+}
+
+func getOwnerAddrs(owner verify.Verifiable) []ids.ShortID {
+    if o, ok := owner.(*secp256k1fx.OutputOwners); ok {
+        return o.Addrs
+    }
+    return nil
+}
+```
+
+## DB Schema
+
+```
+# Staking records (both pending and completed)
+staking:{stakingTxID} → StakingRecord (protobuf/json)
+
+# Index for queries by address
+index:staking_by_addr:{address}:{stakingTxID} → empty
+
+# For RewardValidatorTx to find reward owner addresses (reuse from 03)
+index:staking_reward_addrs:{stakingTxID} → []address
+```
+
+## Why We MUST Fetch From Node
+
+`RewardValidatorTx` block bytes contain ONLY the staking txID reference. Nothing else.
+
+The reward amount is:
+1. Computed during execution: `rewards.Calculate(duration, weight, currentSupply)`
+2. Stored in VM state (not block bytes)
+3. Used to create reward UTXOs as state changes
+
+**What's NOT in the block:**
+- Reward amount
+- Reward UTXOs
+- Reward owner addresses
+
+**Alternative: Compute reward ourselves**
+Would need to track `currentSupply` through every block and replicate the reward formula:
+```go
+potentialReward := rewards.Calculate(
+    stakeDuration,
+    stakerTx.Weight(),
+    currentSupply,
+)
+```
+This requires tracking supply changes on every staking tx. Complex. Not worth it.
+
+## RPC Call Required
+
+| When | RPC Call | Purpose |
+|------|----------|---------|
+| On `RewardValidatorTx` | `platform.getRewardUTXOs(stakingTxID)` | Get actual reward amount |
+
+~1 call per reward event during indexing. Rewards happen roughly every few blocks, so ~0.5 RPS to node. Acceptable.
+
+## This Indexer is 100% Independent
+
+No coordination with other indexers. Receives block, processes it, done.
+
+Each indexer (01-balances, 02-utxos, 03-pending, 04-historical) handles its own:
+- Block processing
+- Cache keys
+- Cache busting
+
+## Summary
+
+- **Requires indexing** — can't proxy, must store staking records
+- Index `AddValidator/Delegator` txs with full details
+- On `RewardValidatorTx`: fetch reward via `getRewardUTXOs`, store completed record
+- Query: filter by address + completed=true
+- **Must call node** for reward amount — no way to derive from block bytes
