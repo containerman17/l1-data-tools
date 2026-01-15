@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -217,6 +219,43 @@ func (c *Client) Close() error {
 		return err
 	}
 	return nil
+}
+
+// InfoResponse contains chain information from the /info endpoint
+type InfoResponse struct {
+	ChainID     string `json:"chainID"`
+	LatestBlock uint64 `json:"latestBlock"`
+}
+
+// Info fetches chain information from the /info endpoint
+func (c *Client) Info(ctx context.Context) (*InfoResponse, error) {
+	// Convert ws address to http and replace /ws with /info
+	httpURL := "http://" + c.addr
+	httpURL = strings.TrimSuffix(httpURL, "/ws")
+	httpURL += "/info"
+
+	req, err := http.NewRequestWithContext(ctx, "GET", httpURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("get info: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("info returned %d: %s", resp.StatusCode, string(body))
+	}
+
+	var info InfoResponse
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return nil, fmt.Errorf("decode info: %w", err)
+	}
+
+	return &info, nil
 }
 
 func (c *Client) connect(ctx context.Context, fromBlock uint64) error {

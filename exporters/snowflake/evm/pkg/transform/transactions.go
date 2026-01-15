@@ -44,7 +44,7 @@ func TransformTransaction(b *rpc.Block, tx *rpc.Transaction) TransactionRow {
 		TransactionIndex:                parseHexInt(tx.TransactionIndex),
 		TransactionCost:                 cost.String(),
 		TransactionValue:                hexToBigIntStr(tx.Value),
-		TransactionType:                 hexToInt64Str(tx.Type),
+		TransactionType:                 hexToInt64StrKeepZero(tx.Type),
 		PartitionDate:                   partitionDate(ts),
 	}
 }

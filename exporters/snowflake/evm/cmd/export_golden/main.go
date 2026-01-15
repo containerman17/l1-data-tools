@@ -1,5 +1,5 @@
-// export_golden fetches blocks 1-100 from the ingestion service
-// and saves them as zst-compressed JSONL to notes/assets/blocks_1_100.zst
+// export_golden fetches blocks from the ingestion service based on chain config
+// and saves them as zst-compressed JSONL to notes/assets/{PREFIX}_BLOCKS.jsonl.zst
 package main
 
 import (
@@ -10,16 +10,33 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"time"
 
 	"github.com/containerman17/l1-data-tools/ingestion/evm/client"
 	"github.com/joho/godotenv"
 	"github.com/klauspost/compress/zstd"
 )
 
-const (
-	startBlock = 1
-	endBlock   = 100
-)
+// Known chain configurations
+// Comment out chains that don't have their indexer synced yet
+var chainConfigs = map[string]struct {
+	filePrefix string
+	startBlock uint64
+	endBlock   uint64
+}{
+	// C-Chain: blocks 75000000-75100000 (commented - indexer not synced)
+	// "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5": {
+	// 	filePrefix: "C_",
+	// 	startBlock: 75000000,
+	// 	endBlock:   75100000,
+	// },
+	// Gunzilla: blocks 14000000-14100000
+	"2M47TxWHGnhNtq6pM5zPXdATBtuqubxn5EPFgFmEawCQr9WFML": {
+		filePrefix: "GUNZILLA_",
+		startBlock: 14000000,
+		endBlock:   14100000,
+	},
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -30,7 +47,6 @@ func main() {
 
 func run() error {
 	// Find .env relative to this command's location in the repo
-	// We expect to be run from the repo root or via go run
 	envPath := findEnvFile()
 	if envPath != "" {
 		if err := godotenv.Load(envPath); err != nil {
@@ -44,28 +60,63 @@ func run() error {
 	}
 
 	// Parse URL to get host:port for websocket
-	// INGESTION_URL format: http://host/path or ws://host/path
 	wsAddr := parseWSAddr(ingestionURL)
 	fmt.Printf("Connecting to %s...\n", wsAddr)
 
-	// Create client with reconnect disabled (one-shot)
+	// Create client
 	c := client.NewClient(wsAddr, client.WithReconnect(false))
 
-	// Collect all blocks
+	// Get chain info
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	info, err := c.Info(ctx)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("get chain info: %w", err)
+	}
+
+	fmt.Printf("Chain ID: %s\n", info.ChainID)
+	fmt.Printf("Latest block: %d\n", info.LatestBlock)
+
+	// Get chain config
+	cfg, ok := chainConfigs[info.ChainID]
+	if !ok {
+		return fmt.Errorf("unknown chain ID: %s (no golden file config)", info.ChainID)
+	}
+
+	// Check if output file already exists
+	outputPath := findOutputPath(cfg.filePrefix)
+	if _, err := os.Stat(outputPath); err == nil {
+		fmt.Printf("Output file already exists: %s (skipping)\n", outputPath)
+		return nil
+	}
+
+	// Check if latest block is sufficient
+	if info.LatestBlock < cfg.endBlock {
+		return fmt.Errorf("indexer not synced: latest=%d, need=%d", info.LatestBlock, cfg.endBlock)
+	}
+
+	fmt.Printf("Fetching sparse blocks (every 100th) from %d to %d for %s...\n", cfg.startBlock, cfg.endBlock, cfg.filePrefix)
+
+	// Collect only blocks where blockNumber % 100 == 0 (sparse sampling)
+	// This matches the Snowflake golden data query: MOD(BLOCKNUMBER, 100) = 0
 	var allBlocks []client.Block
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel = context.WithCancel(context.Background())
 	defer cancel()
 
-	fmt.Printf("Fetching blocks %d to %d...\n", startBlock, endBlock)
-
-	err := c.Stream(ctx, startBlock, func(blocks []client.Block) error {
+	err = c.Stream(ctx, cfg.startBlock, func(blocks []client.Block) error {
 		for _, b := range blocks {
-			if b.Number > endBlock {
+			if b.Number > cfg.endBlock {
 				cancel() // Signal to stop
 				return nil
 			}
-			allBlocks = append(allBlocks, b)
-			if b.Number == endBlock {
+			// Only keep blocks where blockNumber % 100 == 0
+			if b.Number%100 == 0 {
+				allBlocks = append(allBlocks, b)
+				if len(allBlocks)%100 == 0 {
+					fmt.Printf("  collected %d sparse blocks...\n", len(allBlocks))
+				}
+			}
+			if b.Number == cfg.endBlock {
 				cancel() // Done
 				return nil
 			}
@@ -104,7 +155,6 @@ func run() error {
 	compressed := encoder.EncodeAll(buf.Bytes(), nil)
 
 	// Write to output file
-	outputPath := findOutputPath()
 	if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
@@ -120,7 +170,6 @@ func run() error {
 }
 
 func findEnvFile() string {
-	// Try relative paths from likely run locations
 	candidates := []string{
 		"exporters/snowflake/evm/.env",
 		".env",
@@ -134,12 +183,12 @@ func findEnvFile() string {
 	return ""
 }
 
-func findOutputPath() string {
-	// Try to find the assets directory
+func findOutputPath(prefix string) string {
+	filename := prefix + "BLOCKS.jsonl.zst"
 	candidates := []string{
-		"exporters/snowflake/evm/notes/assets/blocks_1_100.zst",
-		"notes/assets/blocks_1_100.zst",
-		"../../notes/assets/blocks_1_100.zst",
+		"exporters/snowflake/evm/notes/assets/" + filename,
+		"notes/assets/" + filename,
+		"../../notes/assets/" + filename,
 	}
 	for _, c := range candidates {
 		dir := filepath.Dir(c)
@@ -148,13 +197,11 @@ func findOutputPath() string {
 		}
 	}
 	// Default
-	return "exporters/snowflake/evm/notes/assets/blocks_1_100.zst"
+	return "exporters/snowflake/evm/notes/assets/" + filename
 }
 
 func parseWSAddr(url string) string {
 	// Strip protocol
-	// Input: http://100.29.188.167/indexer/.../ws
-	// Output: 100.29.188.167/indexer/... (without protocol and trailing /ws)
 	for _, prefix := range []string{"http://", "https://", "ws://", "wss://"} {
 		if len(url) > len(prefix) && url[:len(prefix)] == prefix {
 			url = url[len(prefix):]

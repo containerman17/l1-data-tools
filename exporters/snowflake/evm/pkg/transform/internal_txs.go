@@ -56,27 +56,10 @@ func flattenCallTraceInternal(
 	// Determine if reverted
 	hasError := trace.Error != ""
 
-	// Calculate gas values
-	// For root-level calls, subtract intrinsic gas to get execution gas only
+	// Get gas values directly from trace - no intrinsic gas subtraction
+	// (producer just converts hex values directly to decimal, per utilities.go TransformCall)
 	gas := parseHexInt(trace.Gas)
 	gasUsed := parseHexInt(trace.GasUsed)
-
-	if isRootCall {
-		traceType := strings.ToUpper(trace.Type)
-		isCreate := traceType == "CREATE" || traceType == "CREATE2"
-		intrinsicGas := calculateIntrinsicGas(trace.Input, isCreate)
-
-		gas -= intrinsicGas
-		gasUsed -= intrinsicGas
-
-		// Ensure non-negative values
-		if gas < 0 {
-			gas = 0
-		}
-		if gasUsed < 0 {
-			gasUsed = 0
-		}
-	}
 
 	row := InternalTxRow{
 		BlockHash:       b.Hash,

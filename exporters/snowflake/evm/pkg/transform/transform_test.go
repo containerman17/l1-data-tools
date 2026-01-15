@@ -3,20 +3,92 @@ package transform_test
 import (
 	"bufio"
 	"bytes"
-	"encoding/csv"
+	"context"
+	stdcsv "encoding/csv"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	csvutil "github.com/containerman17/l1-data-tools/exporters/snowflake/evm/internal/csv"
 	"github.com/containerman17/l1-data-tools/exporters/snowflake/evm/pkg/transform"
+	"github.com/containerman17/l1-data-tools/ingestion/evm/client"
 	"github.com/containerman17/l1-data-tools/ingestion/evm/rpc/rpc"
 	"github.com/klauspost/compress/zstd"
 )
+
+// Known chain IDs and their file prefixes
+const (
+	// C-Chain blockchain ID
+	CChainID = "2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5"
+	// Gunzilla blockchain ID
+	GunzillaChainID = "2M47TxWHGnhNtq6pM5zPXdATBtuqubxn5EPFgFmEawCQr9WFML"
+)
+
+// chainConfig holds test configuration for a specific chain
+type chainConfig struct {
+	chainID    string
+	filePrefix string // e.g., "C_" or "GUNZILLA_"
+}
+
+var (
+	testChainConfig *chainConfig
+	configOnce      sync.Once
+	configErr       error
+)
+
+// getChainConfig returns the chain configuration based on INGESTION_URL env var
+func getChainConfig(t *testing.T) *chainConfig {
+	t.Helper()
+	configOnce.Do(func() {
+		ingestionURL := os.Getenv("INGESTION_URL")
+		if ingestionURL == "" {
+			configErr = nil // No URL configured, will skip tests
+			return
+		}
+
+		// Strip http:// prefix for client
+		addr := strings.TrimPrefix(ingestionURL, "http://")
+		addr = strings.TrimPrefix(addr, "https://")
+
+		c := client.NewClient(addr)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		info, err := c.Info(ctx)
+		if err != nil {
+			configErr = err
+			return
+		}
+
+		switch info.ChainID {
+		case CChainID:
+			testChainConfig = &chainConfig{
+				chainID:    CChainID,
+				filePrefix: "C_",
+			}
+		case GunzillaChainID:
+			testChainConfig = &chainConfig{
+				chainID:    GunzillaChainID,
+				filePrefix: "GUNZILLA_",
+			}
+		default:
+			t.Logf("Unknown chain ID: %s", info.ChainID)
+			configErr = nil // Unknown chain, will skip
+		}
+	})
+
+	if configErr != nil {
+		t.Fatalf("failed to get chain config: %v", configErr)
+	}
+
+	return testChainConfig
+}
 
 // testDataDir returns the path to the test assets directory.
 func testDataDir() string {
@@ -25,13 +97,13 @@ func testDataDir() string {
 }
 
 // loadGoldenBlocks loads NormalizedBlocks from the zst-compressed JSONL file.
-func loadGoldenBlocks(t *testing.T) []rpc.NormalizedBlock {
+func loadGoldenBlocks(t *testing.T, prefix string) []rpc.NormalizedBlock {
 	t.Helper()
 
-	dataPath := filepath.Join(testDataDir(), "blocks_1_100.zst")
+	dataPath := filepath.Join(testDataDir(), prefix+"BLOCKS.jsonl.zst")
 	compressed, err := os.ReadFile(dataPath)
 	if err != nil {
-		t.Fatalf("failed to read golden data: %v", err)
+		t.Fatalf("failed to read golden data from %s: %v", dataPath, err)
 	}
 
 	decoder, err := zstd.NewReader(nil)
@@ -65,21 +137,31 @@ func loadGoldenBlocks(t *testing.T) []rpc.NormalizedBlock {
 	return blocks
 }
 
-// loadGoldenCSVRows loads a golden CSV file and returns rows as a set of strings.
-// Each row is joined by a delimiter for easy comparison.
+// loadGoldenCSVRows loads a zstd-compressed golden CSV file, decompresses it in memory,
+// and returns rows as a set of strings for easy comparison.
 func loadGoldenCSVRows(t *testing.T, filename string) map[string]bool {
 	t.Helper()
 	path := filepath.Join(testDataDir(), filename)
-	file, err := os.Open(path)
-	if err != nil {
-		t.Fatalf("failed to open golden CSV %s: %v", filename, err)
-	}
-	defer file.Close()
-
-	reader := csv.NewReader(file)
-	records, err := reader.ReadAll()
+	compressed, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("failed to read golden CSV %s: %v", filename, err)
+	}
+
+	decoder, err := zstd.NewReader(nil)
+	if err != nil {
+		t.Fatalf("failed to create zstd reader: %v", err)
+	}
+	defer decoder.Close()
+
+	decompressed, err := decoder.DecodeAll(compressed, nil)
+	if err != nil {
+		t.Fatalf("failed to decompress golden CSV %s: %v", filename, err)
+	}
+
+	reader := stdcsv.NewReader(bytes.NewReader(decompressed))
+	records, err := reader.ReadAll()
+	if err != nil {
+		t.Fatalf("failed to parse golden CSV %s: %v", filename, err)
 	}
 
 	rows := make(map[string]bool)
@@ -115,7 +197,7 @@ func normalizeCSVValue(s string) string {
 
 // csvRowsToSet converts generated CSV output to a set of row strings.
 func csvRowsToSet(csvContent string) map[string]bool {
-	reader := csv.NewReader(strings.NewReader(csvContent))
+	reader := stdcsv.NewReader(strings.NewReader(csvContent))
 	records, _ := reader.ReadAll()
 
 	rows := make(map[string]bool)
@@ -163,7 +245,7 @@ func compareRowSets(t *testing.T, name string, got, want map[string]bool) {
 					t.Errorf("  ... and %d more", len(missing)-3)
 					break
 				}
-				t.Errorf("  missing: %s", truncate(row, 200))
+				t.Errorf("  missing: %s", truncate(row, 1000))
 			}
 		}
 
@@ -174,7 +256,7 @@ func compareRowSets(t *testing.T, name string, got, want map[string]bool) {
 					t.Errorf("  ... and %d more", len(extra)-3)
 					break
 				}
-				t.Errorf("  extra: %s", truncate(row, 200))
+				t.Errorf("  extra: %s", truncate(row, 1000))
 			}
 		}
 	}
@@ -188,7 +270,12 @@ func truncate(s string, maxLen int) string {
 }
 
 func TestTransformBlocks(t *testing.T) {
-	blocks := loadGoldenBlocks(t)
+	cfg := getChainConfig(t)
+	if cfg == nil {
+		t.Skip("no chain configured (set INGESTION_URL or chain has no golden files)")
+	}
+
+	blocks := loadGoldenBlocks(t, cfg.filePrefix)
 	batch := transform.Transform(blocks)
 
 	var buf bytes.Buffer
@@ -197,13 +284,18 @@ func TestTransformBlocks(t *testing.T) {
 	}
 
 	got := csvRowsToSet(buf.String())
-	want := loadGoldenCSVRows(t, "C_BLOCKS_1_100.csv")
+	want := loadGoldenCSVRows(t, cfg.filePrefix+"BLOCKS.csv.zst")
 
 	compareRowSets(t, "blocks", got, want)
 }
 
 func TestTransformTransactions(t *testing.T) {
-	blocks := loadGoldenBlocks(t)
+	cfg := getChainConfig(t)
+	if cfg == nil {
+		t.Skip("no chain configured (set INGESTION_URL or chain has no golden files)")
+	}
+
+	blocks := loadGoldenBlocks(t, cfg.filePrefix)
 	batch := transform.Transform(blocks)
 
 	var buf bytes.Buffer
@@ -212,13 +304,18 @@ func TestTransformTransactions(t *testing.T) {
 	}
 
 	got := csvRowsToSet(buf.String())
-	want := loadGoldenCSVRows(t, "C_TRANSACTIONS_1_100.csv")
+	want := loadGoldenCSVRows(t, cfg.filePrefix+"TRANSACTIONS.csv.zst")
 
 	compareRowSets(t, "transactions", got, want)
 }
 
 func TestTransformReceipts(t *testing.T) {
-	blocks := loadGoldenBlocks(t)
+	cfg := getChainConfig(t)
+	if cfg == nil {
+		t.Skip("no chain configured (set INGESTION_URL or chain has no golden files)")
+	}
+
+	blocks := loadGoldenBlocks(t, cfg.filePrefix)
 	batch := transform.Transform(blocks)
 
 	var buf bytes.Buffer
@@ -227,13 +324,18 @@ func TestTransformReceipts(t *testing.T) {
 	}
 
 	got := csvRowsToSet(buf.String())
-	want := loadGoldenCSVRows(t, "C_RECEIPTS_1_100.csv")
+	want := loadGoldenCSVRows(t, cfg.filePrefix+"RECEIPTS.csv.zst")
 
 	compareRowSets(t, "receipts", got, want)
 }
 
 func TestTransformLogs(t *testing.T) {
-	blocks := loadGoldenBlocks(t)
+	cfg := getChainConfig(t)
+	if cfg == nil {
+		t.Skip("no chain configured (set INGESTION_URL or chain has no golden files)")
+	}
+
+	blocks := loadGoldenBlocks(t, cfg.filePrefix)
 	batch := transform.Transform(blocks)
 
 	var buf bytes.Buffer
@@ -242,13 +344,18 @@ func TestTransformLogs(t *testing.T) {
 	}
 
 	got := csvRowsToSet(buf.String())
-	want := loadGoldenCSVRows(t, "C_LOGS_1_100.csv")
+	want := loadGoldenCSVRows(t, cfg.filePrefix+"LOGS.csv.zst")
 
 	compareRowSets(t, "logs", got, want)
 }
 
 func TestTransformInternalTxs(t *testing.T) {
-	blocks := loadGoldenBlocks(t)
+	cfg := getChainConfig(t)
+	if cfg == nil {
+		t.Skip("no chain configured (set INGESTION_URL or chain has no golden files)")
+	}
+
+	blocks := loadGoldenBlocks(t, cfg.filePrefix)
 	batch := transform.Transform(blocks)
 
 	var buf bytes.Buffer
@@ -257,13 +364,18 @@ func TestTransformInternalTxs(t *testing.T) {
 	}
 
 	got := csvRowsToSet(buf.String())
-	want := loadGoldenCSVRows(t, "C_INTERNAL_TRANSACTIONS_1_100.csv")
+	want := loadGoldenCSVRows(t, cfg.filePrefix+"INTERNAL_TRANSACTIONS.csv.zst")
 
 	compareRowSets(t, "internal_txs", got, want)
 }
 
 func TestTransformMessages(t *testing.T) {
-	blocks := loadGoldenBlocks(t)
+	cfg := getChainConfig(t)
+	if cfg == nil {
+		t.Skip("no chain configured (set INGESTION_URL or chain has no golden files)")
+	}
+
+	blocks := loadGoldenBlocks(t, cfg.filePrefix)
 	batch := transform.Transform(blocks)
 
 	var buf bytes.Buffer
@@ -272,7 +384,7 @@ func TestTransformMessages(t *testing.T) {
 	}
 
 	got := csvRowsToSet(buf.String())
-	want := loadGoldenCSVRows(t, "C_MESSAGES_1_100.csv")
+	want := loadGoldenCSVRows(t, cfg.filePrefix+"MESSAGES.csv.zst")
 
 	compareRowSets(t, "messages", got, want)
 }

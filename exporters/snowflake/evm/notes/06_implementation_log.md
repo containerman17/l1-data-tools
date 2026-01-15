@@ -1,200 +1,168 @@
 # Implementation Log: Snowflake EVM Transformer
 
-**Date**: 2026-01-14
-**Status**: In Progress
-**Last Updated**: 2026-01-14T03:30:00Z
-
----
-
-## Summary
-
-Implementing a stateless EVM data transformer that converts `NormalizedBlock` data into Snowflake-compatible CSV rows. The implementation uses golden file verification against existing Snowflake exports (blocks 1-100).
+**Date**: 2026-01-15
+**Status**: 4/6 Tests Passing (Gunzilla)
+**Last Updated**: 2026-01-15T02:05:00Z
 
 ---
 
 ## Current Test Status
 
-| Table | Status | Remaining Issues |
-|-------|--------|------------------|
-| `C_BLOCKS` | ✅ PASS | - |
-| `C_TRANSACTIONS` | ⚠️ 80/81 | 1 tx has 10000 wei precision diff (golden data issue) |
-| `C_RECEIPTS` | ✅ PASS | - |
-| `C_LOGS` | ✅ PASS | - |
-| `C_INTERNAL_TRANSACTIONS` | ⚠️ 84/100 | 16 rows have REVERTREASON (improvement over golden) |
-| `C_MESSAGES` | ✅ PASS | - |
+| Test | Status | Diff Count |
+|------|--------|------------|
+| `TestTransformBlocks` | ✅ PASS | 0 |
+| `TestTransformTransactions` | ❌ FAIL | 936 rows |
+| `TestTransformReceipts` | ✅ PASS | 0 |
+| `TestTransformLogs` | ✅ PASS | 0 |
+| `TestTransformInternalTxs` | ❌ FAIL | 3337 rows |
+| `TestTransformMessages` | ✅ PASS | 0 |
 
 ---
 
-## Key Discoveries and Fixes Applied
+## Key Commands
 
-### 1. BLOCKRECEIPTHASH vs BLOCKRECEIPTSROOT (✅ Fixed - Previous Session)
+```bash
+# Run tests (Gunzilla)
+cd /home/ubuntu/l1-data-tools/exporters/snowflake/evm
+export INGESTION_URL=http://100.29.188.167/indexer/2M47TxWHGnhNtq6pM5zPXdATBtuqubxn5EPFgFmEawCQr9WFML/ws
+go test -v -count=1 ./pkg/transform/...
 
-Golden data has unexpected mappings:
+# Export sparse golden blocks
+cd /home/ubuntu/l1-data-tools
+go run ./exporters/snowflake/evm/cmd/export_golden/...
+```
 
-| Snowflake Column | Mapped From |
-|------------------|-------------|
-| `BLOCKRECEIPTHASH` | `ReceiptsRoot` |
-| `BLOCKRECEIPTSROOT` | `StateRoot` |
-| `BLOCKSTATEROOT` | `StateRoot` |
+---
 
-### 2. BLOCKEXTRADATA Encoding (✅ Fixed - Previous Session)
+## Research Findings from avalanche-data-producer
 
-- Golden: Base64-encoded bytes
-- Fix: Added `hexToBase64()` helper in `blocks.go`
+### Location: `~/avalanche-data-producer`
 
-### 3. Empty Address Handling (✅ Fixed - Previous Session)
-
-Contract creation transactions have no `To` address:
-- Golden: `0x`
-- Fix: Added `normalizeAddress()` helper, applied in `transactions.go` and `internal_txs.go`
-
-### 4. TransactionCost Formula (✅ Fixed - Previous Session)
-
-- Discovered: `TransactionCost = gas × gasPrice + value` (not just gas × gasPrice)
-- Fixed in `transactions.go`
-
-### 5. MaxFeePerGas / MaxPriorityFeePerGas Defaults (✅ Fixed - Previous Session)
-
-For pre-EIP-1559 transactions, these fields default to `GasPrice` in golden data.
-
-### 6. VALUE Empty String Handling (✅ Fixed - This Session)
-
-- Golden: `'0'` for empty/nil values
-- Previous: `''` (empty string)
-- Fix: Modified `hexToBigIntStr()` in `helpers.go` to return `"0"` for empty input
-
-### 7. OUTPUT Empty String Handling (✅ Fixed - This Session)
-
-- Golden: `'0x'` for empty/nil output
-- Previous: `''` (empty string)
-- Fix: Added `normalizeHexOutput()` helper, applied in `internal_txs.go`
-
-### 8. GAS/GASUSED Intrinsic Gas Subtraction (✅ Fixed - This Session)
-
-**Major Discovery**: The original producer subtracts intrinsic gas from root-level trace Gas/GasUsed values.
-
-Analysis:
-- Root-level trace Gas includes intrinsic transaction cost
-- Golden data shows only execution gas (intrinsic subtracted)
-- For simple value transfers: Gas=0, GasUsed=0 (21000 - 21000 = 0)
-- For contract calls: Gas reduced by intrinsic cost
-
-Fix: Added `calculateIntrinsicGas()` helper in `helpers.go`:
+### TransactionCost Calculation
+**File:** `entities/subnet/entities.go:91`
 ```go
-// Intrinsic gas = 21000 (base) + 32000 (if CREATE) + data cost (4/zero, 16/nonzero)
+TransactionCost: trx.Cost().String(),
 ```
-Applied subtraction for root-level calls only in `internal_txs.go`.
+Uses Go-Ethereum's native `trx.Cost()` which is `gas * gasPrice + value`. **We do the same.**
 
-### 9. TRACE_POSITION Global Counter (✅ Fixed - This Session)
-
-- Golden: TRACE_POSITION is a global counter (0, 1, 2, ...) across entire call tree
-- Previous: Used depth parameter (local to parent)
-- Fix: Refactored `FlattenCallTrace` to use a pointer counter that increments for each call in DFS order
-
----
-
-## Known Differences (Not Bugs)
-
-### A. TransactionCost Precision (1 tx, 10000 wei)
-
-Transaction `0x580bb509cc234b640920a0e07f817e6724ad1d0722361e65b91ceeee1a01ec26`:
-- Generated: `98990130000000000000`
-- Golden: `98990129999999990000`
-- Diff: 10000 wei
-
-**Analysis**: Our calculation is mathematically correct (`gas × gasPrice + value`). The golden data appears to have a minor precision error in how the Value was stored/calculated. This is 0.0000000001% difference and affects only 1 of 81 transactions.
-
-**Decision**: Document as known golden data issue. Our implementation is correct.
-
-### B. REVERTREASON Data (16 rows have data, golden has none)
-
-- Golden: ALL 100 internal transactions have empty REVERTREASON
-- Generated: 16 internal transactions include actual revert reasons
-
-**Analysis**: The original producer did not capture revert reasons. Our implementation is an improvement.
-
-**Decision**: Document as intentional improvement. Tests will show 16 "mismatches" but we have better data.
-
-### C. Header Backticks (`FROM` vs FROM)
-
-- Golden CSV headers: `` `FROM` ``, `` `TO` `` (backticks around reserved SQL words)
-- Generated: `FROM`, `TO` (Go struct tags don't support backticks)
-
-**Decision**: This is a cosmetic difference handled by whatever loads the CSV into Snowflake. Both work.
-
----
-
-## Files Modified
-
-### pkg/transform/
-
-| File | Status |
-|------|--------|
-| `types.go` | ✅ Complete |
-| `helpers.go` | ✅ Complete (added: normalizeHexOutput, calculateIntrinsicGas) |
-| `blocks.go` | ✅ Complete |
-| `transactions.go` | ✅ Complete |
-| `receipts.go` | ✅ Complete |
-| `logs.go` | ✅ Complete |
-| `internal_txs.go` | ✅ Complete (intrinsic gas subtraction, global trace position) |
-| `messages.go` | ✅ Complete |
-| `transform.go` | ✅ Complete |
-| `transform_test.go` | ✅ Complete |
-
-### internal/csv/
-
-| File | Status |
-|------|--------|
-| `csv.go` | ✅ Complete |
-
----
-
-## Test Results Summary
-
-```
-=== RUN   TestTransformBlocks
---- PASS: TestTransformBlocks
-=== RUN   TestTransformTransactions
-    transactions: missing 1 rows (TransactionCost precision - golden data issue)
-    transactions: extra 1 rows
---- FAIL: TestTransformTransactions (expected)
-=== RUN   TestTransformReceipts
---- PASS: TestTransformReceipts
-=== RUN   TestTransformLogs
---- PASS: TestTransformLogs
-=== RUN   TestTransformInternalTxs
-    internal_txs: missing 16 rows (REVERTREASON improvement)
-    internal_txs: extra 16 rows
---- FAIL: TestTransformInternalTxs (expected - improvement over golden)
-=== RUN   TestTransformMessages
---- PASS: TestTransformMessages
+### Internal Transactions (FlatCall)
+**File:** `utils/utilities.go:73-103`
+```go
+func (c *CallFrame) TransformCall(callIndex string) *FlatCall {
+    call := FlatCall{
+        Value:   "0",
+        Gas:     "0",
+        GasUsed: "0",
+        // ...
+    }
+    if len(c.Value) > 0 {
+        call.Value = (hexutil.MustDecodeBig(c.Value)).String()
+    }
+    if len(c.Gas) > 0 {
+        call.Gas = (hexutil.MustDecodeBig(c.Gas)).String()
+    }
+    if len(c.GasUsed) > 0 {
+        call.GasUsed = (hexutil.MustDecodeBig(c.GasUsed)).String()
+    }
+}
 ```
 
----
-
-## Debug Tools
-
-- `cmd/debug_compare/main.go` - Field-by-field comparison between generated and golden CSVs
+**KEY FINDING:** Producer does **NO intrinsic gas subtraction**! They just decode hex values directly to decimal.
 
 ---
 
-## Remaining Work
+## Fixes Applied
 
-1. **Option A (Accept differences)**: The current implementation is functionally complete and arguably better than the original. The test "failures" are:
-   - 1 transaction with 10000 wei precision difference (golden data bug)
-   - 16 internal transactions with REVERTREASON (our improvement)
+### 1. Removed Intrinsic Gas Subtraction (FIXED)
+- **File:** `pkg/transform/internal_txs.go`
+- **Change:** Removed lines 64-79 that subtracted intrinsic gas
+- **Impact:** Reduced internal tx mismatches from 13182 → 3337
 
-2. **Option B (Force exact match)**: To make tests pass exactly:
-   - Clear REVERTREASON field to empty string (data loss)
-   - This is NOT recommended as we lose useful data
+### 2. BlockGasCost returns empty for 0x0 (FIXED)
+- **File:** `helpers.go`
+- **Change:** `hexToInt64Str()` returns "" for 0x0 values
 
-3. **Option C (Update golden data)**: Re-export golden data using our implementation as the new source of truth.
+### 3. TransactionType keeps 0 value (FIXED)
+- **File:** `transactions.go`  
+- **Change:** Use `hexToInt64StrKeepZero()` for TransactionType
+
+### 4. Output normalization removed (FIXED)
+- **File:** `helpers.go`
+- **Change:** `normalizeHexOutput()` returns input as-is
 
 ---
 
-## References
+## Remaining Precision Issues
 
-- `notes/02_data_structures.md` - Snowflake schema definitions
-- `notes/04_audit_findings.md` - Known issues in original producer
-- `ingestion/evm/rpc/rpc/types.go` - Input data structures
-- `notes/assets/*.csv` - Golden files for verification
+### TransactionCost (936 rows)
+**Example:**
+- Golden: `50060000745118064`
+- Generated: `50060000745118060`
+- Diff: 4 wei
+
+**Analysis:** Both use `gas * gasPrice + value`. The 4 wei diff might be:
+- Rounding in producer
+- Different RPC data source
+- Float precision somewhere
+
+### Internal Txs Value (3337 rows)
+**Example:**
+- Golden: `1984339999999999900000`
+- Generated: `1984340000000000000000`
+- Diff: ~100000 wei (0.0001 ETH)
+
+**Analysis:** Suspicious precision loss. Producer uses `hexutil.MustDecodeBig()`, we use `parseHexBigInt()` - should be equivalent.
+
+---
+
+## Chain Configuration
+
+| Chain | Blockchain ID | File Prefix | Block Range | Status |
+|-------|---------------|-------------|-------------|--------|
+| C-Chain | `2q9e4r6Mu3U68nU1fYjgbR6JvwrRx36CohpAX5UQxse55x1Q5` | `C_` | 75000000-75100000 | Not synced |
+| Gunzilla | `2M47TxWHGnhNtq6pM5zPXdATBtuqubxn5EPFgFmEawCQr9WFML` | `GUNZILLA_` | 14000000-14100000 | ✅ Active |
+
+---
+
+## Files Modified This Session
+
+### ingestion/evm/client/client.go
+- Added `InfoResponse` struct and `Info()` method
+
+### exporters/snowflake/evm/cmd/export_golden/main.go
+- Chain-aware, sparse block sampling (every 100th)
+
+### exporters/snowflake/evm/pkg/transform/transform_test.go
+- Chain detection, zstd decompression, chain-specific golden files
+
+### exporters/snowflake/evm/pkg/transform/helpers.go
+- `hexToInt64Str()` returns "" for 0x0
+- `hexToInt64StrKeepZero()` added
+- `normalizeHexOutput()` returns input as-is
+
+### exporters/snowflake/evm/pkg/transform/transactions.go
+- Use `hexToInt64StrKeepZero()` for TransactionType
+
+### exporters/snowflake/evm/pkg/transform/internal_txs.go
+- **REMOVED** intrinsic gas subtraction (producer doesn't do this)
+
+---
+
+## Asset Files
+
+**Location:** `notes/assets/`
+
+| File | Size | Description |
+|------|------|-------------|
+| `GUNZILLA_BLOCKS.jsonl.zst` | 3.6MB | Input: 1001 sparse blocks |
+| `GUNZILLA_*.csv.zst` | ~6MB total | Golden CSVs from Snowflake |
+| `C_*.csv.zst` | ~15MB total | C-Chain golden CSVs (no JSONL input yet) |
+
+---
+
+## Next Steps
+
+1. **Investigate precision issues** - May need to compare exact hex values in trace data vs what producer outputs
+2. **Consider accepting small diffs** - The precision issues are tiny (4 wei, 0.0001 ETH) and may be acceptable
+3. **Test with C-Chain** when indexer catches up to block 75M
+4. **Add chain-specific handling** if C-Chain has different quirks than Gunzilla

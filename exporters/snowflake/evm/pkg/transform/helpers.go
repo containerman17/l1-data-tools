@@ -51,7 +51,22 @@ func partitionDate(ts int64) string {
 }
 
 // hexToInt64Str converts hex string to decimal int64 string for CSV.
+// Returns empty string for empty input or zero values (matching Snowflake format).
 func hexToInt64Str(s string) string {
+	if s == "" {
+		return ""
+	}
+	v := parseHexInt(s)
+	if v == 0 {
+		return "" // Snowflake stores 0x0 as empty, not "0"
+	}
+	return strconv.FormatInt(v, 10)
+}
+
+// hexToInt64StrKeepZero converts hex string to decimal int64 string.
+// Unlike hexToInt64Str, this keeps "0" for 0x0 values.
+// Used for fields like TransactionType where 0 is a valid/meaningful value.
+func hexToInt64StrKeepZero(s string) string {
 	if s == "" {
 		return ""
 	}
@@ -84,12 +99,10 @@ func normalizeAddress(addr string) string {
 	return addr
 }
 
-// normalizeHexOutput converts empty output to "0x" for trace outputs.
-// Golden data represents nil/empty Output as "0x" rather than empty string.
+// normalizeHexOutput returns the output as-is.
+// Gunzilla golden data stores empty Output as empty string.
+// Note: C-Chain may store as "0x" - this may need chain-specific handling.
 func normalizeHexOutput(output string) string {
-	if output == "" {
-		return "0x"
-	}
 	return output
 }
 
